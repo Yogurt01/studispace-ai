@@ -1,0 +1,6 @@
+{
+  "name": "StudiSpace",
+  "description": "Gen-Z All-in-One Neo-Brutalist Student Learning Space with Pomodoro, AI Study Buddy, Flashcards, Notes, and Quizzes",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

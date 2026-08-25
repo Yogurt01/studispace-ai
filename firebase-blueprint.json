@@ -1,0 +1,119 @@
+{
+  "entities": {
+    "users": {
+      "title": "users",
+      "description": "Student profiles, XP levels, streaks, and achievements",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "major": { "type": "string" },
+        "term": { "type": "string" },
+        "stats": {
+          "type": "object",
+          "properties": {
+            "xp": { "type": "number" },
+            "level": { "type": "number" },
+            "streakDays": { "type": "number" },
+            "totalFocusMinutes": { "type": "number" },
+            "pomodorosCompleted": { "type": "number" },
+            "cardsReviewedCount": { "type": "number" },
+            "quizzesTakenCount": { "type": "number" },
+            "unlockedBadgeIds": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["userId", "email"]
+    },
+    "chats": {
+      "title": "chats",
+      "description": "Socratic AI chat messages and tutor exchanges",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "model", "system"] },
+        "text": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "mode": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["role", "text"]
+    },
+    "quizzes": {
+      "title": "quizzes",
+      "description": "Adaptive quizzes and practice test attempts",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "topic": { "type": "string" },
+        "difficulty": { "type": "string" },
+        "questions": { "type": "array" },
+        "bestScore": { "type": "number" },
+        "timesTaken": { "type": "number" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["title", "questions"]
+    },
+    "notes": {
+      "title": "notes",
+      "description": "User study notes and Gemini AI summaries",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "subject": { "type": "string" },
+        "content": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "color": { "type": "string" },
+        "isPinned": { "type": "boolean" },
+        "updatedAt": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["title", "content"]
+    },
+    "assignments": {
+      "title": "assignments",
+      "description": "Course assignments, deliverables, and Pomodoro goals",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "subject": { "type": "string" },
+        "dueDate": { "type": "string" },
+        "priority": { "type": "string" },
+        "status": { "type": "string" },
+        "estimatedPomodoros": { "type": "number" },
+        "completedPomodoros": { "type": "number" },
+        "weightPercent": { "type": "number" },
+        "gradeTarget": { "type": "string" },
+        "notes": { "type": "string" }
+      },
+      "required": ["title", "subject", "dueDate"]
+    },
+    "decks": {
+      "title": "decks",
+      "description": "Flashcard decks and active recall cards",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "subject": { "type": "string" },
+        "description": { "type": "string" },
+        "color": { "type": "string" },
+        "cards": { "type": "array" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["title", "cards"]
+    }
+  }
+}
