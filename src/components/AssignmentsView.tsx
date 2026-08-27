@@ -21,7 +21,7 @@ interface AssignmentsViewProps {
   onAddAssignment: (assignment: Assignment) => void;
   onUpdateAssignment: (assignment: Assignment) => void;
   onDeleteAssignment: (id: string) => void;
-  onStartPomodoroWithTask: (taskTitle: string) => void;
+  onStartPomodoroWithTask: (taskTitle: string, assignmentId?: string) => void;
   onAwardXp: (amount: number) => void;
 }
 
@@ -255,7 +255,12 @@ export const AssignmentsView: React.FC<AssignmentsViewProps> = ({
                     {/* Action Buttons: Launch in Focus Timer & Advance Status */}
                     <div className="flex items-center justify-between gap-1.5 pt-1">
                       <button
-                        onClick={() => onStartPomodoroWithTask(task.title)}
+                        onClick={() => {
+                          if (task.status === "todo") {
+                            onUpdateAssignment({ ...task, status: "in_progress" });
+                          }
+                          onStartPomodoroWithTask(task.title, task.id);
+                        }}
                         className="flex-1 flex items-center justify-center gap-1 py-1.5 bg-[#FFE600] border border-black font-black text-[10px] uppercase shadow-[1px_1px_0px_0px_rgba(0,0,0,1)] hover:bg-[#fff04d]"
                         title="Start Focus Timer on this task"
                       >

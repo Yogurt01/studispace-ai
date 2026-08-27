@@ -16,6 +16,7 @@ import {
   CalendarPlus,
   ExternalLink,
   Check,
+  GraduationCap,
 } from "lucide-react";
 import {
   AppTab,
@@ -33,7 +34,7 @@ interface DashboardViewProps {
   notes: StudyNote[];
   quizzes: Quiz[];
   onNavigate: (tab: AppTab) => void;
-  onStartPomodoroWithTask?: (taskTitle: string) => void;
+  onStartPomodoroWithTask?: (taskTitle: string, assignmentId?: string) => void;
   onOpenDeck?: (deckId: string) => void;
   onOpenQuiz?: (quizId: string) => void;
 }
@@ -303,7 +304,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <button
                         onClick={() => {
                           if (onStartPomodoroWithTask) {
-                            onStartPomodoroWithTask(item.title);
+                            onStartPomodoroWithTask(item.title, item.id);
                           } else {
                             onNavigate("pomodoro");
                           }
@@ -464,6 +465,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* GPA & Transcript Quick Link */}
+          <div
+            onClick={() => onNavigate("gpa")}
+            className="cursor-pointer bg-[#FF4B4B] text-white border-2 border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:bg-[#ff3636] active:translate-x-1 active:translate-y-1 active:shadow-none transition-all flex items-center justify-between"
+          >
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-white border-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
+                <GraduationCap className="w-5 h-5 text-black" />
+              </div>
+              <div>
+                <h3 className="font-black text-sm uppercase text-white">GPA & Transcript Hub</h3>
+                <p className="text-xs font-bold text-white/90">
+                  AI PDF parser, What-If simulator & credits
+                </p>
+              </div>
+            </div>
+            <ArrowRight className="w-4 h-4 text-white" />
           </div>
 
           {/* Ambient Soundscapes Shortcut */}

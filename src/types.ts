@@ -6,6 +6,7 @@ export type AppTab =
   | "notes"
   | "quiz"
   | "assignments"
+  | "gpa"
   | "soundscapes";
 
 export type Priority = "urgent" | "high" | "medium" | "chill";
@@ -25,6 +26,33 @@ export interface Assignment {
   weightPercent?: number;
   gradeTarget?: string;
   notes?: string;
+}
+
+export type CourseCategory = "Core" | "Major Elective" | "Gen Ed" | "Lab" | "Honors";
+
+export interface CourseGrade {
+  id: string;
+  userId?: string;
+  courseCode: string;
+  courseName: string;
+  term: string; // e.g. "Fall 2025", "Spring 2026"
+  credits: number; // e.g. 3, 4
+  letterGrade: string; // e.g. "A", "A-", "B+", etc.
+  numericGrade?: number; // e.g. 92 out of 100 or 9.2 out of 10
+  category: CourseCategory;
+  qualityPoints4: number; // credits * gradePoint4
+  qualityPoints10: number; // credits * gradePoint10
+}
+
+export type PomodoroPreset = "quick" | "standard" | "marathon" | "custom";
+
+export interface PomodoroSessionConfig {
+  preset: PomodoroPreset;
+  totalSprints: number;
+  workMinutes: number;
+  shortBreakMinutes: number;
+  longBreakMinutes: number;
+  longBreakInterval: number;
 }
 
 export type MasteryLevel = "new" | "learning" | "mastered";

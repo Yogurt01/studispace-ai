@@ -16,6 +16,7 @@ import {
   LogIn,
   LogOut,
   User as UserIcon,
+  GraduationCap,
 } from "lucide-react";
 import { AppTab, UserStats } from "../types";
 import { useAuth } from "../context/AuthContext";
@@ -61,6 +62,7 @@ export const Header: React.FC<HeaderProps> = ({
     { id: "notes", label: "Study Notes", icon: <BookOpen className="w-4 h-4" />, color: "#FFE600" },
     { id: "quiz", label: "Quiz Arena", icon: <CheckCircle className="w-4 h-4" />, color: "#C4B5FD" },
     { id: "assignments", label: "Assignments", icon: <CheckSquare className="w-4 h-4" />, color: "#FFA94D" },
+    { id: "gpa", label: "GPA Manager", icon: <GraduationCap className="w-4 h-4" />, color: "#FF4B4B" },
     { id: "soundscapes", label: "Soundscapes", icon: <Music className="w-4 h-4" />, color: "#00F0FF" },
   ];
 

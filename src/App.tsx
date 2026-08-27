@@ -8,6 +8,7 @@ import { FlashcardsView } from "./components/FlashcardsView";
 import { NotesView } from "./components/NotesView";
 import { QuizArenaView } from "./components/QuizArenaView";
 import { AssignmentsView } from "./components/AssignmentsView";
+import { GpaManagementView } from "./components/GpaManagementView";
 import { SoundscapesView } from "./components/SoundscapesView";
 import { BadgesModal } from "./components/BadgesModal";
 import {
@@ -18,6 +19,7 @@ import {
   StudyNote,
   Quiz,
   Badge,
+  CourseGrade,
 } from "./types";
 import {
   INITIAL_STATS,
@@ -26,6 +28,7 @@ import {
   INITIAL_DECKS,
   INITIAL_NOTES,
   INITIAL_QUIZZES,
+  INITIAL_COURSES,
 } from "./utils/initialData";
 import { soundEngine } from "./utils/audioSynthesizer";
 import confetti from "canvas-confetti";
@@ -42,6 +45,10 @@ import {
   subscribeToQuizzes,
   saveQuizToDb,
   updateQuizScoreInDb,
+  subscribeToCourses,
+  saveCourseToDb,
+  saveBatchCoursesToDb,
+  deleteCourseFromDb,
 } from "./utils/firestoreService";
 
 export default function App() {
@@ -52,6 +59,7 @@ export default function App() {
 
   // Initial navigation parameters
   const [pomodoroTask, setPomodoroTask] = useState<string | undefined>();
+  const [pomodoroAssignmentId, setPomodoroAssignmentId] = useState<string | undefined>();
   const [activeDeckId, setActiveDeckId] = useState<string | undefined>();
   const [activeQuizId, setActiveQuizId] = useState<string | undefined>();
 
@@ -70,6 +78,7 @@ export default function App() {
   const [decks, setDecks] = useState<FlashcardDeck[]>(INITIAL_DECKS);
   const [notes, setNotes] = useState<StudyNote[]>(INITIAL_NOTES);
   const [quizzes, setQuizzes] = useState<Quiz[]>(INITIAL_QUIZZES);
+  const [courses, setCourses] = useState<CourseGrade[]>(INITIAL_COURSES);
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -87,12 +96,16 @@ export default function App() {
     const unsubQuizzes = subscribeToQuizzes(user?.uid || null, (remoteList) => {
       if (remoteList.length > 0) setQuizzes(remoteList);
     });
+    const unsubCourses = subscribeToCourses(user?.uid || null, (remoteList) => {
+      if (remoteList.length > 0) setCourses(remoteList);
+    });
 
     return () => {
       unsubAssignments();
       unsubDecks();
       unsubNotes();
       unsubQuizzes();
+      unsubCourses();
     };
   }, [user?.uid]);
 
@@ -163,6 +176,24 @@ export default function App() {
     handleAwardXp(durationMinutes * 2);
   };
 
+  const handleUpdateAssignmentProgress = (assignmentId: string) => {
+    setAssignments((prev) =>
+      prev.map((a) => {
+        if (a.id === assignmentId) {
+          const nextCompleted = (a.completedPomodoros || 0) + 1;
+          const updatedAssignment: Assignment = {
+            ...a,
+            completedPomodoros: nextCompleted,
+            status: nextCompleted >= a.estimatedPomodoros ? "done" : "in_progress",
+          };
+          saveAssignmentToDb(updatedAssignment);
+          return updatedAssignment;
+        }
+        return a;
+      })
+    );
+  };
+
   const handleToggleMute = () => {
     if (!isAudioMuted) {
       soundEngine.stopAllAmbient();
@@ -231,8 +262,9 @@ export default function App() {
               soundEngine.playChime("click");
               setCurrentTab(tab);
             }}
-            onStartPomodoroWithTask={(taskTitle) => {
+            onStartPomodoroWithTask={(taskTitle, assignmentId) => {
               setPomodoroTask(taskTitle);
+              setPomodoroAssignmentId(assignmentId);
               setCurrentTab("pomodoro");
             }}
             onOpenDeck={(deckId) => {
@@ -251,6 +283,9 @@ export default function App() {
             onCompleteSession={handleCompletePomodoro}
             assignments={assignments}
             initialTaskTitle={pomodoroTask}
+            initialAssignmentId={pomodoroAssignmentId}
+            onUpdateAssignmentProgress={handleUpdateAssignmentProgress}
+            onNavigateToDashboard={() => setCurrentTab("dashboard")}
           />
         )}
 
@@ -370,9 +405,40 @@ export default function App() {
               setAssignments((prev) => prev.filter((a) => a.id !== id));
               deleteAssignmentFromDb(id);
             }}
-            onStartPomodoroWithTask={(taskTitle) => {
+            onStartPomodoroWithTask={(taskTitle, assignmentId) => {
               setPomodoroTask(taskTitle);
+              setPomodoroAssignmentId(assignmentId);
               setCurrentTab("pomodoro");
+            }}
+            onAwardXp={handleAwardXp}
+          />
+        )}
+
+        {currentTab === "gpa" && (
+          <GpaManagementView
+            courses={courses}
+            onAddCourse={(newC) => {
+              const withUser = { ...newC, userId: user?.uid || "guest" };
+              setCourses((prev) => [withUser, ...prev]);
+              saveCourseToDb(withUser);
+            }}
+            onBatchAddCourses={(batch) => {
+              const withUser = batch.map((c) => ({
+                ...c,
+                userId: user?.uid || "guest",
+              }));
+              setCourses((prev) => [...withUser, ...prev]);
+              saveBatchCoursesToDb(withUser);
+            }}
+            onUpdateCourse={(updated) => {
+              setCourses((prev) =>
+                prev.map((c) => (c.id === updated.id ? updated : c))
+              );
+              saveCourseToDb(updated);
+            }}
+            onDeleteCourse={(id) => {
+              setCourses((prev) => prev.filter((c) => c.id !== id));
+              deleteCourseFromDb(id);
             }}
             onAwardXp={handleAwardXp}
           />
@@ -400,4 +466,3 @@ export default function App() {
     </div>
   );
 }
-

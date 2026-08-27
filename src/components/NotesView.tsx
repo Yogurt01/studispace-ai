@@ -17,6 +17,8 @@ import {
   HelpCircle,
   Brain,
   Share2,
+  Download,
+  Palette,
 } from "lucide-react";
 import { StudyNote, FlashcardDeck } from "../types";
 import { soundEngine } from "../utils/audioSynthesizer";
@@ -37,6 +39,8 @@ type AiNoteAction =
   | "cheat_sheet"
   | "simplify";
 
+const NOTE_COLORS = ["#FFE600", "#73EC8E", "#FF66C4", "#00F0FF", "#C4B5FD", "#F4F4F0"];
+
 export const NotesView: React.FC<NotesViewProps> = ({
   notes,
   onAddNote,
@@ -49,6 +53,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
     notes[0] ? notes[0].id : ""
   );
   const [searchQuery, setSearchQuery] = useState("");
+  const [selectedTagFilter, setSelectedTagFilter] = useState<string>("all");
   const [isEditing, setIsEditing] = useState(true);
   const [copied, setCopied] = useState(false);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
@@ -60,14 +65,26 @@ export const NotesView: React.FC<NotesViewProps> = ({
   const activeNote =
     notes.find((n) => n.id === selectedNoteId) || notes[0] || null;
 
-  const filteredNotes = notes.filter((n) => {
-    const q = searchQuery.toLowerCase();
-    return (
-      n.title.toLowerCase().includes(q) ||
-      n.subject.toLowerCase().includes(q) ||
-      n.tags.some((t) => t.toLowerCase().includes(q))
-    );
-  });
+  // Extract all unique tags
+  const allTags = Array.from(new Set(notes.flatMap((n) => n.tags || [])));
+
+  // Filtered notes (pinned first)
+  const filteredNotes = notes
+    .filter((n) => {
+      const q = searchQuery.toLowerCase();
+      const matchesSearch =
+        n.title.toLowerCase().includes(q) ||
+        n.subject.toLowerCase().includes(q) ||
+        (n.tags && n.tags.some((t) => t.toLowerCase().includes(q))) ||
+        n.content.toLowerCase().includes(q);
+
+      const matchesTag =
+        selectedTagFilter === "all" ||
+        (n.tags && n.tags.includes(selectedTagFilter));
+
+      return matchesSearch && matchesTag;
+    })
+    .sort((a, b) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0));
 
   const handleCreateNewNote = () => {
     soundEngine.playChime("click");
@@ -77,9 +94,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
       subject: "General",
       content: `# New Study Topic\n\n- Key principle 1\n- Formula or theorem\n- Common pitfalls to avoid\n`,
       tags: ["StudyDraft"],
-      color: ["#FFE600", "#73EC8E", "#FF66C4", "#00F0FF", "#C4B5FD"][
-        Math.floor(Math.random() * 5)
-      ],
+      color: NOTE_COLORS[Math.floor(Math.random() * (NOTE_COLORS.length - 1))],
       updatedAt: new Date().toLocaleDateString([], {
         month: "short",
         day: "numeric",
@@ -148,12 +163,45 @@ export const NotesView: React.FC<NotesViewProps> = ({
     soundEngine.playChime("success");
   };
 
+  const handleSaveAiAsNewNote = () => {
+    if (!activeNote || !aiResultModal) return;
+    const newNote: StudyNote = {
+      id: `note-${Date.now()}`,
+      title: `${activeNote.title} - ${aiResultModal.title.replace(/[⚡🔑📋📑🍕]/g, "").trim()}`,
+      subject: activeNote.subject,
+      content: aiResultModal.content,
+      tags: [...activeNote.tags, "AI_Synthesized"],
+      color: "#00F0FF",
+      updatedAt: "Just now",
+      isPinned: false,
+    };
+    onAddNote(newNote);
+    setSelectedNoteId(newNote.id);
+    setAiResultModal(null);
+    soundEngine.playChime("levelup");
+    onAwardXp(20);
+  };
+
   const handleCopyNote = () => {
     if (!activeNote) return;
     navigator.clipboard.writeText(activeNote.content);
     setCopied(true);
     soundEngine.playChime("click");
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDownloadMarkdown = () => {
+    if (!activeNote) return;
+    const blob = new Blob([activeNote.content], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${activeNote.title.toLowerCase().replace(/[^a-z0-9]/gi, "_")}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    soundEngine.playChime("click");
   };
 
   return (
@@ -170,7 +218,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
             </h1>
           </div>
           <p className="text-xs font-bold text-gray-700 mt-0.5">
-            Markdown notebook with integrated Gemini AI summaries & cheat sheet generators
+            Markdown notebook with integrated Gemini AI summaries, cheat sheets, and tags
           </p>
         </div>
 
@@ -195,10 +243,35 @@ export const NotesView: React.FC<NotesViewProps> = ({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search notes or tags..."
+              placeholder="Search notes, subjects, content..."
               className="w-full pl-9 pr-3 py-2 bg-[#F4F4F0] border-2 border-black font-bold text-xs focus:outline-none focus:bg-white"
             />
           </div>
+
+          {/* Tag Filter Chips */}
+          {allTags.length > 0 && (
+            <div className="flex items-center gap-1 overflow-x-auto pb-1">
+              <button
+                onClick={() => setSelectedTagFilter("all")}
+                className={`px-2 py-0.5 border border-black font-black text-[10px] uppercase whitespace-nowrap ${
+                  selectedTagFilter === "all" ? "bg-black text-white" : "bg-[#F4F4F0]"
+                }`}
+              >
+                All ({notes.length})
+              </button>
+              {allTags.map((tag) => (
+                <button
+                  key={tag}
+                  onClick={() => setSelectedTagFilter(tag)}
+                  className={`px-2 py-0.5 border border-black font-bold text-[10px] whitespace-nowrap ${
+                    selectedTagFilter === tag ? "bg-[#FFE600] text-black font-black" : "bg-[#F4F4F0]"
+                  }`}
+                >
+                  #{tag}
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* Notes Scrollable List */}
           <div className="space-y-2 max-h-[560px] overflow-y-auto pr-1">
@@ -231,14 +304,15 @@ export const NotesView: React.FC<NotesViewProps> = ({
                     <span className="text-[10px] font-black uppercase bg-white px-1.5 py-0.5 border border-black">
                       {note.subject}
                     </span>
-                    {note.tags.slice(0, 2).map((t, idx) => (
-                      <span
-                        key={idx}
-                        className="text-[10px] font-bold text-gray-700 bg-white/70 px-1 py-0.5"
-                      >
-                        #{t}
-                      </span>
-                    ))}
+                    {note.tags &&
+                      note.tags.slice(0, 2).map((t, idx) => (
+                        <span
+                          key={idx}
+                          className="text-[10px] font-bold text-gray-700 bg-white/70 px-1 py-0.5"
+                        >
+                          #{t}
+                        </span>
+                      ))}
                   </div>
 
                   <p className="text-[10px] font-medium text-gray-700 mt-2 line-clamp-2">
@@ -273,8 +347,22 @@ export const NotesView: React.FC<NotesViewProps> = ({
                     placeholder="Note Title..."
                   />
 
-                  {/* Actions: Pin, Copy, Delete */}
-                  <div className="flex items-center gap-2 self-end sm:self-auto">
+                  {/* Actions: Pin, Copy, Export MD, Color, Delete */}
+                  <div className="flex items-center gap-1.5 self-end sm:self-auto flex-wrap">
+                    {/* Color Swatch Picker */}
+                    <div className="flex items-center gap-1 border border-black p-1 bg-[#F4F4F0]">
+                      {NOTE_COLORS.map((col) => (
+                        <div
+                          key={col}
+                          onClick={() => onUpdateNote({ ...activeNote, color: col })}
+                          className={`w-3.5 h-3.5 border border-black cursor-pointer ${
+                            activeNote.color === col ? "ring-2 ring-black" : ""
+                          }`}
+                          style={{ backgroundColor: col }}
+                        />
+                      ))}
+                    </div>
+
                     <button
                       onClick={() =>
                         onUpdateNote({ ...activeNote, isPinned: !activeNote.isPinned })
@@ -297,6 +385,14 @@ export const NotesView: React.FC<NotesViewProps> = ({
                       ) : (
                         <Copy className="w-4 h-4" />
                       )}
+                    </button>
+
+                    <button
+                      onClick={handleDownloadMarkdown}
+                      className="p-1.5 bg-white border-2 border-black hover:bg-gray-100"
+                      title="Download Markdown (.md) file"
+                    >
+                      <Download className="w-4 h-4" />
                     </button>
 
                     <button
@@ -331,7 +427,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
                     onChange={(e) =>
                       onUpdateNote({
                         ...activeNote,
-                        tags: e.target.value.split(",").map((t) => t.trim()),
+                        tags: e.target.value.split(",").map((t) => t.trim()).filter(Boolean),
                       })
                     }
                     placeholder="Tags: ExamPrep, Chapter 2"
@@ -414,7 +510,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
                   className="w-full p-4 bg-[#F4F4F0] border-2 border-black font-mono text-sm leading-relaxed text-black focus:outline-none focus:bg-white resize-y"
                 />
               ) : (
-                <div className="p-4 bg-[#F4F4F0] border-2 border-black min-h-[320px] text-sm font-medium leading-relaxed whitespace-pre-wrap">
+                <div className="p-4 bg-[#F4F4F0] border-2 border-black min-h-[320px] text-sm font-medium leading-relaxed whitespace-pre-wrap font-sans">
                   {activeNote.content}
                 </div>
               )}
@@ -456,12 +552,18 @@ export const NotesView: React.FC<NotesViewProps> = ({
               {aiResultModal.content}
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-2 border-t-2 border-black">
+            <div className="flex items-center justify-end gap-2 pt-2 border-t-2 border-black flex-wrap">
               <button
                 onClick={() => setAiResultModal(null)}
                 className="px-4 py-2 bg-gray-100 border-2 border-black font-black text-xs uppercase"
               >
                 Close
+              </button>
+              <button
+                onClick={handleSaveAiAsNewNote}
+                className="px-4 py-2 bg-[#00F0FF] border-2 border-black font-black text-xs uppercase shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:bg-[#1cf3ff]"
+              >
+                Save as New Note (+20 XP)
               </button>
               <button
                 onClick={handleAppendAiToNote}

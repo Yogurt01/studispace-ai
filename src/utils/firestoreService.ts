@@ -18,12 +18,14 @@ import {
   StudyNote,
   Assignment,
   FlashcardDeck,
+  CourseGrade,
 } from "../types";
 import {
   INITIAL_ASSIGNMENTS,
   INITIAL_DECKS,
   INITIAL_NOTES,
   INITIAL_QUIZZES,
+  INITIAL_COURSES,
 } from "./initialData";
 
 // --- FIREBASE STORAGE & DOCUMENTS SERVICE ---
@@ -449,3 +451,78 @@ export async function saveDeckToDb(deck: FlashcardDeck): Promise<void> {
     console.error("saveDeckToDb error:", err);
   }
 }
+
+// --- COURSES & GPA SERVICE ---
+export function subscribeToCourses(
+  userId: string | null,
+  callback: (courses: CourseGrade[]) => void
+) {
+  try {
+    const coursesRef = collection(db, "courses");
+    return onSnapshot(
+      coursesRef,
+      async (snapshot) => {
+        if (snapshot.empty) {
+          await seedInitialCourses();
+          return;
+        }
+        const list: CourseGrade[] = [];
+        snapshot.forEach((d) => {
+          list.push({ id: d.id, ...d.data() } as CourseGrade);
+        });
+        callback(list);
+      },
+      (err) => {
+        console.warn("Courses snapshot error:", err);
+      }
+    );
+  } catch (err) {
+    console.error("subscribeToCourses error:", err);
+    return () => {};
+  }
+}
+
+export async function seedInitialCourses(): Promise<void> {
+  try {
+    const batch = writeBatch(db);
+    INITIAL_COURSES.forEach((course) => {
+      const docRef = doc(db, "courses", course.id);
+      batch.set(docRef, { ...course, userId: "system" });
+    });
+    await batch.commit();
+  } catch (err) {
+    console.error("seedInitialCourses error:", err);
+  }
+}
+
+export async function saveCourseToDb(course: CourseGrade): Promise<void> {
+  try {
+    const docRef = doc(db, "courses", course.id);
+    await setDoc(docRef, course);
+  } catch (err) {
+    console.error("saveCourseToDb error:", err);
+  }
+}
+
+export async function saveBatchCoursesToDb(courses: CourseGrade[]): Promise<void> {
+  try {
+    const batch = writeBatch(db);
+    courses.forEach((c) => {
+      const docRef = doc(db, "courses", c.id);
+      batch.set(docRef, c);
+    });
+    await batch.commit();
+  } catch (err) {
+    console.error("saveBatchCoursesToDb error:", err);
+  }
+}
+
+export async function deleteCourseFromDb(id: string): Promise<void> {
+  try {
+    const docRef = doc(db, "courses", id);
+    await deleteDoc(docRef);
+  } catch (err) {
+    console.error("deleteCourseFromDb error:", err);
+  }
+}
+

@@ -361,6 +361,125 @@ Make all 4 options believable and plausible (no joke options). Provide a solid c
     }
   });
 
+  // AI Transcript & Course Parser Endpoint
+  app.post("/api/gemini/parse-transcript", async (req, res) => {
+    try {
+      const { transcriptText = "", base64Data, mimeType } = req.body;
+      if (!transcriptText && !base64Data) {
+        return res.status(400).json({ error: "Transcript text or document is required" });
+      }
+
+      const ai = getGeminiClient();
+
+      if (!ai) {
+        // High quality fallback parsed data if API key not present
+        const sampleParsed = [
+          {
+            courseCode: "CS 301",
+            courseName: "Algorithms & Complexities",
+            term: "Spring 2026",
+            credits: 4,
+            letterGrade: "A",
+            numericGrade: 95,
+            category: "Core",
+          },
+          {
+            courseCode: "MATH 302",
+            courseName: "Probability & Statistics for Engineers",
+            term: "Spring 2026",
+            credits: 3,
+            letterGrade: "A-",
+            numericGrade: 89,
+            category: "Core",
+          },
+          {
+            courseCode: "PHYS 150",
+            courseName: "University Physics II (Electromagnetism)",
+            term: "Spring 2026",
+            credits: 4,
+            letterGrade: "B+",
+            numericGrade: 86,
+            category: "Gen Ed",
+          },
+        ];
+        return res.json({ courses: sampleParsed, simulated: true });
+      }
+
+      const systemInstruction = `You are an expert academic registrar AI that parses student transcripts, grade reports, and syllabi into structured course data. Extract all courses with high precision. Standardize letter grades into standard US scale (A+, A, A-, B+, B, B-, C+, C, C-, D+, D, F). If numeric grade (0-100) is present, extract it or estimate reasonable number based on letter grade. Categorize each into Core, Major Elective, Gen Ed, Lab, or Honors.`;
+
+      let contents: any[] = [];
+      if (base64Data && mimeType) {
+        contents = [
+          {
+            role: "user",
+            parts: [
+              {
+                inlineData: {
+                  mimeType,
+                  data: base64Data,
+                },
+              },
+              {
+                text: "Extract all course grades, course codes, course names, terms/semesters, credit hours, and grades from this academic transcript or grade report.",
+              },
+            ],
+          },
+        ];
+      } else {
+        contents = [
+          {
+            role: "user",
+            parts: [
+              {
+                text: `Extract all courses, codes, names, terms/semesters, credits, and letter grades from this transcript text:\n\n${transcriptText}`,
+              },
+            ],
+          },
+        ];
+      }
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.7-flash",
+        contents,
+        config: {
+          systemInstruction,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              courses: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    courseCode: { type: Type.STRING },
+                    courseName: { type: Type.STRING },
+                    term: { type: Type.STRING },
+                    credits: { type: Type.NUMBER },
+                    letterGrade: { type: Type.STRING },
+                    numericGrade: { type: Type.NUMBER },
+                    category: {
+                      type: Type.STRING,
+                      enum: ["Core", "Major Elective", "Gen Ed", "Lab", "Honors"],
+                    },
+                  },
+                  required: ["courseCode", "courseName", "term", "credits", "letterGrade", "category"],
+                },
+              },
+            },
+            required: ["courses"],
+          },
+        },
+      });
+
+      const parsed = JSON.parse(response.text || '{"courses":[]}');
+      res.json(parsed);
+    } catch (err: any) {
+      console.error("Transcript parse error:", err);
+      res.status(500).json({ error: "Failed to parse transcript", details: err?.message });
+    }
+  });
+
   // Vite middleware in dev or static files in production
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
