@@ -1,0 +1,117 @@
+name: Deploy
+
+# Real deployment pipeline for the production branch:
+#   quality gate -> build image -> publish -> deploy -> health check
+#
+# Every credential comes from GitHub Secrets; none are written in this file.
+# Required repository secrets (see docs/DEPLOYMENT.md):
+#   GCP_PROJECT_ID, GCP_REGION, GCP_SERVICE_NAME
+#   GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT   (keyless auth)
+#   GEMINI_API_KEY
+#   VITE_FIREBASE_* (browser-safe, injected at runtime)
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # required for keyless Google auth
+
+jobs:
+  quality-gate:
+    name: Quality gate
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Build, publish and deploy
+    needs: quality-gate
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Artifact Registry
+        run: gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and publish image
+        id: image
+        run: |
+          IMAGE="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/studispace/studispace:${GITHUB_SHA}"
+          docker build --tag "$IMAGE" .
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        run: |
+          # Production runs Gemini only: there is no Ollama process in this
+          # container, and localhost inside it is not a developer's laptop.
+          gcloud run deploy "${{ secrets.GCP_SERVICE_NAME }}" \
+            --image="${{ steps.image.outputs.image }}" \
+            --project="${{ secrets.GCP_PROJECT_ID }}" \
+            --region="${{ secrets.GCP_REGION }}" \
+            --platform=managed \
+            --allow-unauthenticated \
+            --port=3000 \
+            --set-env-vars="NODE_ENV=production,AI_PROVIDERS=gemini,DEFAULT_AI_PROVIDER=gemini" \
+            --set-env-vars="VITE_FIREBASE_API_KEY=${{ secrets.VITE_FIREBASE_API_KEY }}" \
+            --set-env-vars="VITE_FIREBASE_AUTH_DOMAIN=${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}" \
+            --set-env-vars="VITE_FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}" \
+            --set-env-vars="VITE_FIREBASE_STORAGE_BUCKET=${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}" \
+            --set-env-vars="VITE_FIREBASE_MESSAGING_SENDER_ID=${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}" \
+            --set-env-vars="VITE_FIREBASE_APP_ID=${{ secrets.VITE_FIREBASE_APP_ID }}" \
+            --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest"
+          URL=$(gcloud run services describe "${{ secrets.GCP_SERVICE_NAME }}" \
+            --project="${{ secrets.GCP_PROJECT_ID }}" --region="${{ secrets.GCP_REGION }}" \
+            --format='value(status.url)')
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          gcloud run services update "${{ secrets.GCP_SERVICE_NAME }}" \
+            --project="${{ secrets.GCP_PROJECT_ID }}" --region="${{ secrets.GCP_REGION }}" \
+            --update-env-vars="APP_URL=$URL" --quiet
+
+      - name: Health check the rollout
+        run: |
+          URL="${{ steps.deploy.outputs.url }}"
+          echo "Checking $URL/health"
+          for i in $(seq 1 30); do
+            if curl -fsS "$URL/health" | grep -q '"status":"ok"'; then
+              echo "health check passed"
+              # The deployment must advertise a runtime it can actually reach.
+              curl -fsS "$URL/api/ai/providers"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Health check failed after rollout"
+          exit 1
+
+      - name: Roll back on failed health check
+        if: failure()
+        run: |
+          echo "::warning::Deployment failed its health check; routing traffic back to the previous revision."
+          PREVIOUS=$(gcloud run revisions list \
+            --service="${{ secrets.GCP_SERVICE_NAME }}" \
+            --project="${{ secrets.GCP_PROJECT_ID }}" \
+            --region="${{ secrets.GCP_REGION }}" \
+            --format='value(metadata.name)' --sort-by='~metadata.creationTimestamp' | sed -n '2p')
+          if [ -n "$PREVIOUS" ]; then
+            gcloud run services update-traffic "${{ secrets.GCP_SERVICE_NAME }}" \
+              --project="${{ secrets.GCP_PROJECT_ID }}" \
+              --region="${{ secrets.GCP_REGION }}" \
+              --to-revisions="$PREVIOUS=100"
+          fi

@@ -1,0 +1,19 @@
+services:
+  studispace:
+    build:
+      context: .
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/firebase-service-account.json
+      # Ollama and the Qwen3 weights stay on the host; inside the container
+      # "localhost" is the container itself, so reach the host explicitly.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS}:/run/secrets/firebase-service-account.json:ro

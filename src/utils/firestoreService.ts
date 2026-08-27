@@ -7,7 +7,6 @@ import {
   updateDoc,
   query,
   where,
-  orderBy,
   onSnapshot,
   writeBatch,
 } from "firebase/firestore";
@@ -93,11 +92,18 @@ export function subscribeToDocuments(
   userId: string | null,
   callback: (docs: UploadedStudyDocument[]) => void
 ) {
+  // Documents are private to their uploader, so the query must be scoped to a
+  // single userId: security rules reject any query that could match another
+  // student's documents. Ordering is applied client-side because an equality
+  // filter combined with orderBy would require a deployed composite index.
+  if (!userId) {
+    callback([]);
+    return () => {};
+  }
+
   try {
     const docsRef = collection(db, "documents");
-    const q = userId
-      ? query(docsRef, where("userId", "in", [userId, "scholar-guest"]), orderBy("uploadedAt", "desc"))
-      : query(docsRef, orderBy("uploadedAt", "desc"));
+    const q = query(docsRef, where("userId", "==", userId));
 
     return onSnapshot(
       q,
@@ -106,6 +112,7 @@ export function subscribeToDocuments(
         snapshot.forEach((d) => {
           list.push({ id: d.id, ...d.data() } as UploadedStudyDocument);
         });
+        list.sort((a, b) => (b.uploadedAt || "").localeCompare(a.uploadedAt || ""));
         callback(list);
       },
       (err) => {
@@ -123,19 +130,30 @@ export function subscribeToChats(
   userId: string | null,
   callback: (messages: ChatMessage[]) => void
 ) {
+  // Chats are private to their owner, so the query must be scoped to a single
+  // userId: security rules reject any query that could match another student's
+  // messages. Ordering is applied client-side because an equality filter
+  // combined with orderBy would require a deployed composite index.
+  if (!userId) {
+    callback([]);
+    return () => {};
+  }
+
   try {
     const chatsRef = collection(db, "chats");
-    const q = userId
-      ? query(chatsRef, where("userId", "in", [userId, "guest"]), orderBy("createdAt", "asc"))
-      : query(chatsRef, orderBy("createdAt", "asc"));
+    const q = query(chatsRef, where("userId", "==", userId));
 
     return onSnapshot(
       q,
       (snapshot) => {
         const msgs: ChatMessage[] = [];
         snapshot.forEach((d) => {
+          // The server persists LangGraph conversation state in this collection
+          // keyed by threadId; those documents carry no `role` and are not messages.
+          if (!d.data().role) return;
           msgs.push({ id: d.id, ...d.data() } as ChatMessage);
         });
+        msgs.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
         callback(msgs);
       },
       (err) => {

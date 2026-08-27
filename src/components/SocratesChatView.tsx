@@ -44,6 +44,15 @@ interface SocratesChatViewProps {
 }
 
 type SocratesMode = "socratic" | "eli5" | "exam_grill" | "mnemonic" | "roast_essay";
+type ModelProviderId = "gemini" | "ollama";
+
+interface ProviderStatus {
+  id: ModelProviderId;
+  name: string;
+  available: boolean;
+  detail?: string;
+  model?: string;
+}
 
 export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
   onSaveAsNote,
@@ -63,6 +72,10 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
 
   const [input, setInput] = useState("");
   const [selectedMode, setSelectedMode] = useState<SocratesMode>("socratic");
+  // Null until /api/ai/providers answers: the server decides the default, and
+  // hard-coding one here selects a runtime that may not be able to reply.
+  const [selectedProvider, setSelectedProvider] = useState<ModelProviderId | null>(null);
+  const [providers, setProviders] = useState<ProviderStatus[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [savedId, setSavedId] = useState<string | null>(null);
@@ -83,17 +96,34 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const threadIdRef = useRef<string>("");
+  /** Messages shown but deliberately not in Firestore: the in-flight turn and failure notices. */
+  const sessionOnlyIds = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const key = `studispace-socrates-thread-${user?.uid || "guest"}`;
+    const existing = localStorage.getItem(key);
+    threadIdRef.current = existing || crypto.randomUUID();
+    localStorage.setItem(key, threadIdRef.current);
+  }, [user?.uid]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  // Real-time Firestore chat synchronization
+  // Real-time Firestore chat synchronization.
+  //
+  // Remote history is authoritative, but a blind replace would delete the turn
+  // currently being generated and any session-only failure notice, because
+  // neither is persisted. Those are tracked in sessionOnlyIds and merged back.
   useEffect(() => {
     const unsubscribe = subscribeToChats(user?.uid || null, (remoteMsgs) => {
-      if (remoteMsgs.length > 0) {
-        setMessages(remoteMsgs);
-      }
+      if (remoteMsgs.length === 0) return;
+      setMessages((local) => {
+        const remoteIds = new Set(remoteMsgs.map((m) => m.id));
+        const keep = local.filter((m) => sessionOnlyIds.current.has(m.id) && !remoteIds.has(m.id));
+        return [...remoteMsgs, ...keep].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+      });
     });
 
     const unsubscribeDocs = subscribeToDocuments(user?.uid || null, (remoteDocs) => {
@@ -107,6 +137,34 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
       unsubscribeDocs();
     };
   }, [user?.uid]);
+
+  // Model provider availability. Polled so the offline badge stays honest when
+  // Ollama is started or stopped while the page is open.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch("/api/ai/providers");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled || !Array.isArray(data.providers)) return;
+        setProviders(data.providers);
+        setSelectedProvider((current) => {
+          // Keep the student's choice while it can still answer.
+          if (current && data.providers.find((p: ProviderStatus) => p.id === current)?.available) return current;
+          // Otherwise prefer the server default, then any runtime that is up.
+          const serverDefault = data.providers.find((p: ProviderStatus) => p.id === data.defaultProvider && p.available);
+          const firstAvailable = data.providers.find((p: ProviderStatus) => p.available);
+          return (serverDefault?.id ?? firstAvailable?.id ?? data.defaultProvider ?? current) as ModelProviderId;
+        });
+      } catch {
+        // Availability is advisory; a failed probe must not break the chat view.
+      }
+    };
+    load();
+    const timer = setInterval(load, 20000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
 
   useEffect(() => {
     scrollToBottom();
@@ -400,6 +458,28 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
     const userText = textToSend || input;
     if (!userText.trim() || isLoading) return;
 
+    // Refuse locally rather than firing a request that is certain to fail.
+    if (!selectedProvider) return;
+    const activeProvider = providers.find((p) => p.id === selectedProvider);
+    if (activeProvider && !activeProvider.available) {
+      soundEngine.playChime("wrong");
+      // Session-only notice, never persisted (see the catch block below).
+      const offlineNoticeId = `ai-${Date.now()}`;
+      sessionOnlyIds.current.add(offlineNoticeId);
+      setMessages((prev) => [...prev, {
+        id: offlineNoticeId,
+        userId: user?.uid || "guest",
+        role: "model",
+        text: selectedProvider === "ollama"
+          ? `⚠️ **Qwen3 Local is offline.**\n\nPlease start Ollama and try again.\n\n${activeProvider.detail || ""}`.trim()
+          : `⚠️ **${activeProvider.name} is unavailable.**\n\n${activeProvider.detail || "Pick another model to keep studying."}`,
+        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        mode: selectedMode,
+        createdAt: Date.now(),
+      }]);
+      return;
+    }
+
     soundEngine.playChime("click");
 
     const userMessage: ChatMessage = {
@@ -411,31 +491,52 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
       createdAt: Date.now(),
     };
 
+    // Shown immediately, but not persisted yet: a turn only becomes part of the
+    // stored conversation once the model has actually answered. Persisting here
+    // would leave orphaned user turns in Firestore whenever a provider fails,
+    // and would drift from the server-side ConversationState, which is only
+    // written on success.
+    sessionOnlyIds.current.add(userMessage.id);
     setMessages((prev) => [...prev, userMessage]);
-    saveChatMessage(userMessage);
     setInput("");
     setIsLoading(true);
 
     try {
-      const messageContext = selectedDocContext
-        ? `[Attached Document Context: ${selectedDocContext.name}]\n\n${userText.trim()}`
-        : userText.trim();
+      const documentContext = selectedDocContext
+        ? `Attached study document: ${selectedDocContext.name}\n${selectedDocContext.downloadUrl}`
+        : undefined;
 
-      const res = await fetch("/api/gemini/chat", {
+      // The server derives the conversation owner from this token, so a signed-in
+      // scholar's thread can never be reached by another account.
+      const idToken = await user?.getIdToken?.().catch(() => "");
+      const res = await fetch("/api/socrates/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+        },
         body: JSON.stringify({
-          message: messageContext,
-          history: messages.slice(-6).map((m) => ({
-            role: m.role,
-            text: m.text,
-          })),
+          threadId: threadIdRef.current,
+          message: userText.trim(),
           mode: selectedMode,
+          provider: selectedProvider,
+          context: documentContext,
         }),
       });
 
-      const data = await res.json();
-      const replyText = data.reply || "Thinking complete.";
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.reply) {
+        // Surface the real failure instead of a cheerful placeholder: a silent
+        // "Thinking complete." hides refused sign-ins and Gemini outages alike.
+        throw new Error(
+          res.status === 403
+            ? "This conversation belongs to a different account. Clear the chat to start a fresh thread."
+            : res.status === 401
+              ? "Your sign-in has expired. Sign out and back in to keep studying."
+              : data.error || `Socrates AI is unavailable right now (HTTP ${res.status}).`
+        );
+      }
+      const replyText = data.reply;
 
       soundEngine.playChime("flip");
       onAwardXp(15);
@@ -451,7 +552,11 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
       };
 
       setMessages((prev) => [...prev, aiMessage]);
-      saveChatMessage(aiMessage);
+      // Both halves of a completed turn are stored together so the rendered
+      // history matches the history the model was given.
+      await saveChatMessage(userMessage);
+      await saveChatMessage(aiMessage);
+      sessionOnlyIds.current.delete(userMessage.id);
     } catch (err) {
       console.error("Chat error:", err);
       // Fallback
@@ -459,13 +564,16 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
         id: `ai-${Date.now()}`,
         userId: user?.uid || "guest",
         role: "model",
-        text: `💡 **Socrates Insight:**\n\nLet's examine **"${userText}"**:\n- What is the primary constraint or definition?\n- Try isolating the variables one at a time!\n\n*(Note: Gemini API is connected via server-side endpoint)*`,
+        text: `⚠️ **Socrates couldn't answer that one.**\n\n${(err as Error)?.message || "The tutor is unreachable right now."}\n\nWhile you wait, try examining **"${userText}"** yourself:\n- What is the primary constraint or definition?\n- Try isolating the variables one at a time!`,
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         mode: selectedMode,
         createdAt: Date.now() + 1,
       };
+      // Deliberately not persisted: a failed request must not append a fabricated
+      // assistant turn to the stored conversation. It stays on screen for this
+      // session only and disappears on reload, leaving history uncorrupted.
+      sessionOnlyIds.current.add(fallbackAiMsg.id);
       setMessages((prev) => [...prev, fallbackAiMsg]);
-      saveChatMessage(fallbackAiMsg);
     } finally {
       setIsLoading(false);
     }
@@ -497,6 +605,9 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
     if (window.speechSynthesis) window.speechSynthesis.cancel();
     setSpeakingMessageId(null);
     await clearChatsFromDb(user?.uid || null);
+    const threadKey = `studispace-socrates-thread-${user?.uid || "guest"}`;
+    threadIdRef.current = crypto.randomUUID();
+    localStorage.setItem(threadKey, threadIdRef.current);
     const resetMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
       userId: user?.uid || "guest",
@@ -524,7 +635,7 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
                 Socrates AI Voice & Study Mentor
               </h1>
               <span className="bg-[#FFE600] font-black text-[10px] px-2 py-0.5 border border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
-                GEMINI 2.5 • GOOGLE SPEECH
+                MULTI-MODEL • GOOGLE SPEECH
               </span>
             </div>
             <p className="text-xs font-bold text-gray-800">
@@ -679,6 +790,34 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
         </div>
       )}
 
+      {/* Model Provider Switcher */}
+      <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
+        <span className="font-black text-[10px] uppercase tracking-wider text-gray-700 whitespace-nowrap">Model:</span>
+        {providers.map((p) => (
+          <button
+            key={p.id}
+            id={`btn-model-${p.id}`}
+            onClick={() => {
+              setSelectedProvider(p.id);
+              soundEngine.playChime("click");
+            }}
+            disabled={!p.available}
+            title={p.detail || (p.model ? `${p.name} — ${p.model}` : p.name)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 border-2 border-black font-black text-[11px] uppercase whitespace-nowrap transition-all ${
+              !p.available
+                ? "bg-gray-200 text-gray-500 cursor-not-allowed shadow-none"
+                : selectedProvider === p.id
+                  ? "shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] translate-x-[-1px] translate-y-[-1px]"
+                  : "bg-white hover:bg-gray-100 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+            }`}
+            style={{ backgroundColor: p.available && selectedProvider === p.id ? "#00F0FF" : undefined }}
+          >
+            <span>{p.id === "ollama" ? "🖥️" : "☁️"}</span>
+            <span>{p.available ? p.name : `${p.name} — Offline`}</span>
+          </button>
+        ))}
+      </div>
+
       {/* Mode Selector Tabs */}
       <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
         {modes.map((m) => (
@@ -812,7 +951,7 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
               <div className="p-3 bg-[#F4F4F0] border-2 border-black shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] flex items-center gap-2">
                 <div className="w-3 h-3 bg-black animate-ping" />
                 <span className="text-xs font-black uppercase tracking-wider">
-                  Analyzing via Gemini AI...
+                  Analyzing via {providers.find((p) => p.id === selectedProvider)?.name ?? "Socrates"}...
                 </span>
               </div>
             </div>

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, useContext, useState, useEffect, useRef } from "react";
 import {
   User,
   signInWithPopup,
@@ -58,6 +58,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Sign-up writes the profile the student actually filled in. Creating an
+  // account fires onAuthStateChanged immediately, so without this flag both
+  // paths race to create users/{uid} and the generic defaults can land last,
+  // silently discarding the chosen name, major and term.
+  const signUpInFlight = useRef(false);
+
   useEffect(() => {
     let unsubscribeDoc: (() => void) | undefined;
 
@@ -70,7 +76,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         try {
           const docSnap = await getDoc(userDocRef);
 
-          if (!docSnap.exists()) {
+          if (signUpInFlight.current) {
+            // signUpWithEmail owns profile creation for this account.
+          } else if (!docSnap.exists()) {
             const initialProfile: UserProfile = {
               userId: currentUser.uid,
               displayName: currentUser.displayName || "Scholar",
@@ -145,6 +153,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     major?: string,
     term?: string
   ) => {
+    signUpInFlight.current = true;
     try {
       const userCredential = await createUserWithEmailAndPassword(
         auth,
@@ -176,6 +185,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     } catch (err: any) {
       console.error("Sign Up Error:", err);
       throw err;
+    } finally {
+      signUpInFlight.current = false;
     }
   };
 

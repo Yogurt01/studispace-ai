@@ -1,0 +1,25 @@
+node_modules
+dist
+build
+.git
+.github
+.env
+.env.*
+!.env.example
+*.log
+coverage
+.vscode
+.idea
+.DS_Store
+firebase-debug.log*
+firestore-debug.log*
+
+# Tests and E2E assets never belong in the production image
+e2e
+playwright.config.ts
+playwright-report
+test-results
+blob-report
+**/*.test.ts
+docs
+README.md

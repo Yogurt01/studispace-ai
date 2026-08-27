@@ -11,45 +11,6 @@
 
 ---
 
-## 📖 Overview
-
-Students currently juggle fragmented, disconnected tools: separate task lists, timer apps, note-taking software, standalone AI chatbots, flashcard sites, and grade spreadsheets. Constantly context-switching breaks deep focus and separates planning from actual study execution.
-
-**StudiSpace** is designed as a personal **Student Operating System (Student OS)** that bridges this gap. Rather than acting as a simple AI chatbot, StudiSpace connects the entire academic learning cycle:
-
-$$\textbf{PLAN} \longrightarrow \textbf{STUDY} \longrightarrow \textbf{FOCUS} \longrightarrow \textbf{TRACK} \longrightarrow \textbf{IMPROVE}$$
-
-- **Plan**: Schedule assignments, set target grades, and structure study milestones.
-- **Study**: Learn foundational concepts with Socratic inquiry and synthesize lecture notes.
-- **Focus**: Launch 25-minute Pomodoro focus sprints with zero-dependency ambient soundscapes.
-- **Track**: Monitor daily streaks, level progression, focus hours, and exam weights.
-- **Improve**: Pinpoint weak concepts with adaptive practice quizzes and spaced repetition flashcards.
-
----
-
-## ✨ Key Features
-
-### 🧠 Socratic AI Tutor (`gemini-3.7-flash`)
-- **Inquiry-Driven Guidance**: Guides problem solving through questioning rather than dumping raw answers.
-- **5 Tutoring Modes**: Socratic Inquiry, ELI5 (Metaphors), Exam Grill, Mnemonics Generator, and Essay Argumentation Roast.
-- **Voice Tutor & Microphone**: Native Web Speech API integration for hands-free voice questioning and speech synthesis reading.
-- **Document Context & Drive Import**: Attach study PDFs/images via Firebase Storage or link Google Docs directly into the conversation.
-
-### 🍅 Pomodoro Focus Desk
-- **Interval Presets**: Classic 25/5/15 Pomodoro cycle with real-time progress indicators and fullscreen mode.
-- **Planner Task Binding**: Launch focus sprints directly linked to specific assignments.
-- **Built-in Web Audio Soundscapes**: Pure mathematical synthesis of Rain, 40Hz Binaural Gamma waves, White Noise, Lofi Vinyl Crackle, Cafe Murmur, and Forest Streams without external audio files.
-
-### 📝 AI Document Summarizer & Study Notes
-- **Markdown Knowledge Base**: Organize notes with color-coded tags, search filters, and pinned items.
-- **One-Click AI Note Transformations**: Generate bulleted TL;DR summaries, key term glossaries, actionable checkpoints, and 1-page exam cheat sheets.
-
-### 🗂️ Active Recall Flashcards
-- **Interactive Spaced Repetition**: 3D card flips with tactile audio feedback and mastery ratings (`Learning` / `Mastered`).
-- **AI Deck Generator**: Instantly generate structured flashcard decks from any topic or raw lecture notes.
-
-### ⚡ Quiz Arena & Google Sheets Export
-- **Exam Testing Simulation**: Multiple-choice quizzes with explanations, hints, and streak multiplier XP.
 - **Google Sheets Export**: One-click generation of formatted `.csv` reports with question breakdowns and mastery percentages.
 - **AI Quiz Generator**: Generate custom quizzes by topic and difficulty (`Easy`, `Medium`, `Hard`, `Genius`).
 
@@ -62,6 +23,123 @@ $$\textbf{PLAN} \longrightarrow \textbf{STUDY} \longrightarrow \textbf{FOCUS} \l
 - *Status: Dedicated cumulative GPA & grade simulation dashboard is currently planned.*
 
 ---
+
+## 🧩 Local Development Setup
+
+For the complete, standalone setup and troubleshooting guide, see [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md).
+
+### Prerequisites
+- Node.js 22 or newer
+- npm
+- A Google AI Studio API key for Gemini (optional if you only use the local Qwen3 provider)
+- A Firebase project with Authentication, Firestore, and Storage enabled
+
+> The project dependencies require Node 22+; the container and CI use Node 22. Using Node 18 cannot load the Tailwind native binding.
+
+### Install dependencies
+```bash
+npm ci
+```
+
+### Environment variables
+Create a local `.env` file in the project root using the template in `.env.example`:
+
+```bash
+cp .env.example .env
+```
+
+Then fill in the values:
+```env
+GEMINI_API_KEY=your_gemini_api_key_here
+VITE_FIREBASE_API_KEY=your_firebase_api_key
+VITE_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=your-firebase-project-id
+VITE_FIREBASE_STORAGE_BUCKET=your-project.firebasestorage.app
+VITE_FIREBASE_MESSAGING_SENDER_ID=your_messaging_sender_id
+VITE_FIREBASE_APP_ID=your_firebase_app_id
+```
+
+Important notes:
+- `GEMINI_API_KEY` stays on the server side and is loaded by `server.ts` via `dotenv`.
+- The `VITE_FIREBASE_*` values are browser-exposed and must match your Firebase web app configuration.
+- Never commit `.env`; keep `.env.example` as the safe template in git.
+
+### Run the app
+```bash
+npm run dev
+```
+
+The app runs on `http://localhost:3000`.
+
+### Create a production build
+```bash
+npm run build
+```
+
+### Validate types
+```bash
+npm run lint
+```
+
+### Run tests
+```bash
+npm test
+```
+
+### Docker
+Build and run the production image. Runtime values are injected, never copied into the image:
+
+```bash
+docker build -t studispace .
+docker run --rm --env-file .env -p 3000:3000 studispace
+```
+
+Or use Compose for the same production-like local setup:
+
+```bash
+docker compose up --build
+```
+
+The container serves the app on port 3000 and exposes `GET /health` for health checks.
+
+### Environment reference
+
+| Variable | Scope | Required | Notes |
+| --- | --- | --- | --- |
+| `GEMINI_API_KEY` | Server, secret | Yes in production | Google AI Studio API key. |
+| `PORT` | Server | No | Defaults to `3000`. |
+| `APP_URL` | Server | No | Public application URL for deployment configuration. |
+| `NODE_ENV` | Server | No | Use `production` in containers. |
+| `DISABLE_HMR` | Development tooling | No | Disables Vite HMR/file watching when `true`. |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Server, secret path | Required for server Firestore persistence | Absolute service-account JSON path; keep the JSON outside the repository. |
+| `VITE_FIREBASE_*` | Browser-visible | Yes | Firebase web-app configuration, safe to expose but must match the Firebase project. |
+
+### Deployment and CI/CD
+
+Two workflows:
+
+- **Quality Gate** (`.github/workflows/ci.yml`) — every push and pull request:
+  `npm ci`, `npm run lint`, `npm test`, `npm run build`, hermetic browser E2E
+  (`npm run test:e2e`), plus a Docker image build with a `/health` smoke test.
+  It is fully deterministic: no Gemini quota, no Firebase service account, no
+  local Ollama, no GPU. All provider calls are stubbed.
+- **Deploy** (`.github/workflows/deploy.yml`) — pushes to `main` only: reuses the
+   quality gate, builds and publishes the image to Artifact Registry, deploys to
+   Cloud Run, health-checks the rollout and rolls back to the previous revision if
+   the check fails. Production advertises Gemini only; it cannot use a developer
+   machine's `localhost:11434` Ollama service.
+
+Credentials come from GitHub Secrets and Google Secret Manager; none are written
+in workflow YAML. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+### Firebase setup
+1. Create or select a Firebase project.
+2. Enable Firebase Authentication and choose the sign-in providers used by the app.
+3. Enable Cloud Firestore and Firebase Storage.
+4. Copy the Firebase web config values into your `.env` file.
+5. Keep the project ID and storage bucket aligned with your Firebase project.
+
+> Security note: only the public Firebase web config should go into `VITE_FIREBASE_*` variables. API keys, service account credentials, and Gemini secrets must never be bundled into client code or tracked in git.
 
 ## 🔄 Product Workflow
 
@@ -127,9 +205,15 @@ StudiSpace is intentionally designed to feel like a **physical study desk transl
 | **Audio Engine** | Web Audio API | Zero-dependency mathematical synthesis for ambient noise & UI chimes |
 | **Speech Engine** | Web Speech API | Native in-browser voice recognition and speech synthesis |
 | **Backend** | Node.js, Express 4 | API proxying on port 3000 to keep secrets secure |
-| **AI Integration** | Google GenAI SDK (`gemini-3.7-flash`) | Server-side LLM inference for chat, notes, quizzes, and decks |
+| **AI Integration** | Provider abstraction over Gemini (`gemini-3.7-flash`) and Ollama/Qwen3 (`qwen3:4b`) | Server-side LLM inference; the runtime is chosen per turn |
 | **Database & Auth** | Firebase Authentication, Cloud Firestore | Real-time user stats, notes, tasks, decks, and guest session sync |
 | **Cloud Storage** | Firebase Storage | Document uploads for PDF/image study context |
+
+### AI terminology
+
+- **Tutoring modes** are the five pedagogical instructions in `server/socrates/prompts.ts`.
+- **Model providers** are Gemini and Ollama/Qwen3, selected by `ProviderRouter` and configured with `AI_PROVIDERS` and `DEFAULT_AI_PROVIDER`.
+- **LangGraph agents** are graph nodes. The current graph has one `tutor` agent, reached through `supervisor` and `context_node`; it is not five agents.
 
 ---
 
@@ -165,7 +249,7 @@ StudiSpace is intentionally designed to feel like a **physical study desk transl
 ├── firestore.rules             # Firestore security rules
 ├── metadata.json               # Platform capabilities & permissions
 ├── package.json                # Project dependencies and npm scripts
-├── server.ts                   # Express server entry point & Gemini API endpoints
+├── server.ts                   # Express entry point, Socratic chat & provider endpoints
 └── README.md                   # Project documentation
 ```
 
@@ -174,10 +258,10 @@ StudiSpace is intentionally designed to feel like a **physical study desk transl
 ## 🚀 Getting Started
 
 ### Prerequisites
-- **Node.js**: v18.0.0 or higher
-- **npm** or **bun** / **yarn**
-- **Gemini API Key**: Required for AI features (get one from [Google AI Studio](https://aistudio.google.com))
-- **Firebase Project**: Required for multi-device sync and authentication
+- **Node.js**: v22.0.0 or higher
+- **npm**
+- **Firebase project**: Required for registered-user authentication and Firestore/Storage sync
+- **Gemini API key**: Optional for local development when using Ollama only; required by the production server and Gemini-backed generators
 
 ### Installation
 
@@ -189,7 +273,7 @@ StudiSpace is intentionally designed to feel like a **physical study desk transl
 
 2. **Install dependencies**:
    ```bash
-   npm install
+   npm ci
    ```
 
 3. **Configure Environment Variables**:
@@ -221,7 +305,12 @@ StudiSpace is intentionally designed to feel like a **physical study desk transl
 - `npm run build`: Builds the client-side SPA into `dist/` and bundles `server.ts` into a CommonJS production bundle via `esbuild`.
 - `npm run start`: Runs the compiled production server (`node dist/server.cjs`).
 - `npm run lint`: Validates TypeScript type safety via `tsc --noEmit`.
+- `npm test`: Runs unit and provider tests without live AI calls.
+- `npm run test:e2e`: Runs hermetic CI browser tests with backend calls stubbed.
+- `npm run test:e2e:local`: Runs the optional real Firebase + Ollama/Qwen3 browser suite.
 - `npm run clean`: Cleans up local build outputs and distribution directories.
+
+For Docker, Compose, Firebase rules deployment, Ollama setup, and Cloud Run deployment, see [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md), [docs/LOCAL_LLM.md](docs/LOCAL_LLM.md), and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ---
 
@@ -234,7 +323,7 @@ StudiSpace is intentionally designed to feel like a **physical study desk transl
 - [x] Markdown Study Notes with 5 one-click AI transformation tools.
 - [x] Quiz Arena with streak bonuses and Google Sheets CSV export.
 - [x] Assignment Kanban planner with priority badges and Google Calendar sync.
-- [x] Firebase Authentication (Email, Google Auth, and Guest Mode) with real-time Firestore persistence.
+- [x] Firebase Authentication (Email and Google), Guest Scholar mode, and Firestore persistence for registered-user data.
 
 ### Next
 - [ ] Dedicated cumulative GPA visualizer & grade simulator view.

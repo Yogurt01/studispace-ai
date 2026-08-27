@@ -90,7 +90,7 @@ export const Header: React.FC<HeaderProps> = ({
               🚀 StudiSpace
             </div>
             <div className="hidden sm:inline-flex items-center gap-1.5 bg-black text-white font-mono text-[10px] px-2.5 py-1 border-2 border-black font-bold uppercase tracking-wider shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
-              <span>🟢 Powered by Google Gemini 2.5 • Firebase • Cloud Run • Workspace APIs</span>
+              <span>🟢 Powered by Gemini &amp; local Qwen3 • Firebase • Cloud Run • Workspace APIs</span>
             </div>
           </div>
 

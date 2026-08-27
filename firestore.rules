@@ -5,51 +5,57 @@ service cloud.firestore {
     function isAuthenticated() {
       return request.auth != null;
     }
-    
-    function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
+
+    // The stored document belongs to the caller (read / update / delete).
+    function ownsExistingDoc() {
+      return isAuthenticated() && resource.data.userId == request.auth.uid;
     }
 
-    function isDocOwner() {
-      return isAuthenticated() && (
-        resource == null || resource.data.userId == request.auth.uid || request.resource.data.userId == request.auth.uid
-      );
+    // The document being written is stamped with the caller's own uid (create / update).
+    function ownsIncomingDoc() {
+      return isAuthenticated() && request.resource.data.userId == request.auth.uid;
     }
 
-    // User profiles & stats
+    // User profiles & stats — private to their owner.
     match /users/{userId} {
-      allow read: if true;
-      allow write: if isAuthenticated() && request.auth.uid == userId;
+      allow read, write: if isAuthenticated() && request.auth.uid == userId;
     }
 
-    // Socratic AI Chats
+    // Socratic AI Chats — messages and LangGraph conversation state are private
+    // to their owner. Queries must be scoped with where("userId", "==", uid).
     match /chats/{chatId} {
-      allow read: if true;
-      allow create, update, delete: if isAuthenticated() || true;
+      allow read: if ownsExistingDoc();
+      allow create: if ownsIncomingDoc();
+      allow update: if ownsExistingDoc() && ownsIncomingDoc();
+      allow delete: if ownsExistingDoc();
     }
 
-    // Quizzes
+    // Uploaded study document metadata — private to the uploader.
+    match /documents/{documentId} {
+      allow read: if ownsExistingDoc();
+      allow create: if ownsIncomingDoc();
+      allow update: if ownsExistingDoc() && ownsIncomingDoc();
+      allow delete: if ownsExistingDoc();
+    }
+
+    // Shared study content. These collections mix per-user documents with the
+    // seeded `userId: "system"` starter set that every student sees, and the app
+    // reads them as whole collections, so they stay collection-readable — but only
+    // to signed-in students, never anonymously.
     match /quizzes/{quizId} {
-      allow read: if true;
-      allow create, update, delete: if isAuthenticated() || true;
+      allow read, write: if isAuthenticated();
     }
 
-    // Study Notes
     match /notes/{noteId} {
-      allow read: if true;
-      allow create, update, delete: if isAuthenticated() || true;
+      allow read, write: if isAuthenticated();
     }
 
-    // Assignments
     match /assignments/{assignmentId} {
-      allow read: if true;
-      allow create, update, delete: if isAuthenticated() || true;
+      allow read, write: if isAuthenticated();
     }
 
-    // Flashcard Decks
     match /decks/{deckId} {
-      allow read: if true;
-      allow create, update, delete: if isAuthenticated() || true;
+      allow read, write: if isAuthenticated();
     }
   }
 }

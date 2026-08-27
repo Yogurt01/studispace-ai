@@ -3,15 +3,21 @@ import { getAuth, GoogleAuthProvider } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 
-// Read Firebase config from environment variables with fallback to provisioned settings
+// Read Firebase client configuration from environment variables.
+// These values must match the Firebase web app that the app uses.
+const runtimeConfig = (globalThis as typeof globalThis & { __STUDISPACE_RUNTIME_CONFIG__?: Record<string, string> }).__STUDISPACE_RUNTIME_CONFIG__ ?? {};
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyAZjfdRtWNKZdV5lSq4Uon-VuAbimJiss8",
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "n8n-hragent.firebaseapp.com",
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "n8n-hragent",
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "n8n-hragent.firebasestorage.app",
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "661978143452",
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:661978143452:web:4206486b047d3f2537f219",
+  apiKey: runtimeConfig.VITE_FIREBASE_API_KEY ?? import.meta.env.VITE_FIREBASE_API_KEY ?? "",
+  authDomain: runtimeConfig.VITE_FIREBASE_AUTH_DOMAIN ?? import.meta.env.VITE_FIREBASE_AUTH_DOMAIN ?? "",
+  projectId: runtimeConfig.VITE_FIREBASE_PROJECT_ID ?? import.meta.env.VITE_FIREBASE_PROJECT_ID ?? "",
+  storageBucket: runtimeConfig.VITE_FIREBASE_STORAGE_BUCKET ?? import.meta.env.VITE_FIREBASE_STORAGE_BUCKET ?? "",
+  messagingSenderId: runtimeConfig.VITE_FIREBASE_MESSAGING_SENDER_ID ?? import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID ?? "",
+  appId: runtimeConfig.VITE_FIREBASE_APP_ID ?? import.meta.env.VITE_FIREBASE_APP_ID ?? "",
 };
+
+if (!firebaseConfig.apiKey || !firebaseConfig.projectId) {
+  console.warn("Firebase environment variables are missing. Populate .env with your Firebase web config before running the app.");
+}
 
 // Initialize Firebase App singleton
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);

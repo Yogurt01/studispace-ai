@@ -3,8 +3,23 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { resolveConversationUserId } from "./server/socrates/identity";
+import { FirestoreConversationRepository, InMemoryConversationRepository } from "./server/socrates/persistence";
+import { isSocratesMode } from "./server/socrates/prompts";
+import { createProviderRouter } from "./server/socrates/providers";
+import { isModelProviderId, ProviderError } from "./server/socrates/providers/types";
+import { SocratesService } from "./server/socrates/service";
 
 dotenv.config();
+
+function getRuntimeConfig() {
+  const port = Number(process.env.PORT || 3000);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("PORT must be a valid TCP port");
+  if (process.env.NODE_ENV === "production" && !process.env.GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is required when NODE_ENV=production");
+  }
+  return { port };
+}
 
 function getGeminiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -23,105 +38,61 @@ function getGeminiClient(): GoogleGenAI | null {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const { port } = getRuntimeConfig();
 
   app.use(express.json({ limit: "10mb" }));
 
-  // Health check
-  app.get("/api/health", (_req, res) => {
-    res.json({
-      status: "ok",
-      hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
-    });
+  // Firebase web configuration is intentionally public; keep server secrets out of this response.
+  app.get("/runtime-config.js", (_req, res) => {
+    const config = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("VITE_FIREBASE_")));
+    res.type("application/javascript").send(`globalThis.__STUDISPACE_RUNTIME_CONFIG__=${JSON.stringify(config)};`);
   });
 
-  // AI Socratic Chat Endpoint
-  app.post("/api/gemini/chat", async (req, res) => {
+  // Health check
+  app.get(["/health", "/api/health"], (_req, res) => res.json({ status: "ok" }));
+
+  const providerRouter = createProviderRouter();
+  let conversationRepository: FirestoreConversationRepository | InMemoryConversationRepository;
+  try { conversationRepository = new FirestoreConversationRepository(); }
+  catch { conversationRepository = new InMemoryConversationRepository(); console.warn("Firestore credentials unavailable; conversation state is temporary in this local process."); }
+  const socratesService = new SocratesService(conversationRepository, providerRouter);
+
+  // Which model runtimes this server can reach. Never exposes keys or URLs.
+  app.get("/api/ai/providers", async (_req, res) => {
     try {
-      const { message, history = [], mode = "socratic" } = req.body;
-      if (!message) {
+      res.json({ providers: await providerRouter.describeAll(), defaultProvider: providerRouter.defaultId });
+    } catch (err) {
+      console.error("Provider availability error:", err);
+      res.status(500).json({ error: "Could not read model provider availability" });
+    }
+  });
+
+  // Socratic chat (LangGraph orchestration + Firestore conversation state).
+  // `/api/gemini/chat` predates the provider abstraction and is kept as an alias
+  // so existing clients keep working; the runtime is chosen by `provider`.
+  app.post(["/api/socrates/chat", "/api/gemini/chat"], async (req, res) => {
+    try {
+      const { message, mode = "socratic", threadId, context, provider } = req.body;
+      if (typeof message !== "string" || !message.trim()) {
         return res.status(400).json({ error: "Message is required" });
       }
-
-      const ai = getGeminiClient();
-
-      let systemInstruction = `You are Socrates AI, an energetic, ultra-smart, Gen-Z friendly study mentor inside the StudiSpace app. 
-Your aesthetic is witty, direct, encouraging, high-clarity, and intellectually rigorous.
-Use formatting (bullet points, bold highlights, concise blocks, markdown) that looks crisp in a Neo-Brutalist UI.`;
-
-      if (mode === "socratic") {
-        systemInstruction += `
-MODE: SOCRATIC QUESTIONING.
-Never give the raw direct answer immediately if the user is asking how to solve something. Instead:
-1. Validate their question with a fun, punchy remark.
-2. Break down the core intuition or underlying principle.
-3. Ask 1-2 sharp guiding questions or hint at the next logical step so the student discovers the answer themselves.
-4. If they answer correctly or are stuck after trying, celebrate their breakthrough and explain the full insight concisely.`;
-      } else if (mode === "eli5") {
-        systemInstruction += `
-MODE: ELI5 (Explain Like I'm 5 / High School Gen-Z).
-Explain the concept using brilliant real-world analogies, hilarious metaphors (gaming, pop-culture, food, daily life), and zero jargon. Keep it crystal clear and unforgettable.`;
-      } else if (mode === "exam_grill") {
-        systemInstruction += `
-MODE: EXAM PREP GRILLER.
-Act like a sharp, supportive professor or quizmaster. Test the user's comprehension immediately with a challenging scenario-based question, offer multiple choice or short prompt, and evaluate their critical thinking.`;
-      } else if (mode === "mnemonic") {
-        systemInstruction += `
-MODE: MNEMONIC & MEMORY HACK MASTER.
-Generate crazy, memorable mnemonics, visual rhymes, chunking tricks, or absurd mental associations to lock the concept permanently in memory.`;
-      } else if (mode === "roast_essay") {
-        systemInstruction += `
-MODE: THESIS & ESSAY ROASTER / POLISHER.
-Constructively critique the student's argument or text. Point out weak evidence, fluff, logical fallacies, and offer 3 upgraded powerhouse versions of their sentences.`;
-      }
-
-      if (!ai) {
-        // Fallback intelligent offline simulation
-        let reply = "";
-        if (mode === "socratic") {
-          reply = `💡 **Let's break this down together!**\n\nTo tackle **"${message}"**, think about the foundational rule first: What is the primary cause or formula that governs this behavior?\n\n👉 **Guiding Question**: If you change the main variable by 50%, what happens to the output? Take a guess, and let's test your hypothesis!`;
-        } else if (mode === "eli5") {
-          reply = `🍕 **Here is the 10-second breakdown of "${message}":**\n\nImagine you are playing a co-op game with your squad. Each component has one job. When one player fails their cooldown, the entire chain halts. That's essentially what happens here!\n\n✨ **Key takeaway**: Simplicity beats complexity every single time.`;
-        } else if (mode === "mnemonic") {
-          reply = `🧠 **Memory Hack for "${message}":**\n\nUse the acronym **S.P.A.C.E.**:\n- **S** - Structure first\n- **P** - Principles aligned\n- **A** - Actionable logic\n- **C** - Check edge cases\n- **E** - Execute cleanly!\n\nRepeat it 3 times out loud right now! 🔥`;
-        } else {
-          reply = `⚡ **Insight on "${message}":**\n\n1. **Core Concept**: Focus on the highest-leverage mechanic.\n2. **Common Trap**: Most students confuse the symptom with the root cause.\n3. **Pro Tip**: Always verify with a concrete minimal test case!`;
-        }
-        return res.json({ reply, mode, simulated: true });
-      }
-
-      // Build conversation contents
-      const contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
-
-      for (const h of history.slice(-8)) {
-        contents.push({
-          role: h.role === "user" ? "user" : "model",
-          parts: [{ text: h.text || h.content || "" }],
-        });
-      }
-
-      contents.push({
-        role: "user",
-        parts: [{ text: message }],
-      });
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3.7-flash",
-        contents,
-        config: {
-          systemInstruction,
-          temperature: 0.7,
-        },
-      });
-
-      const reply = response.text || "No response generated.";
-      res.json({ reply, mode });
+      if (typeof threadId !== "string" || !threadId.trim()) return res.status(400).json({ error: "threadId is required" });
+      if (!isSocratesMode(mode)) return res.status(400).json({ error: "Invalid tutoring mode" });
+      if (context !== undefined && typeof context !== "string") return res.status(400).json({ error: "Context must be text" });
+      if (provider !== undefined && !isModelProviderId(provider)) return res.status(400).json({ error: "Unknown model provider" });
+      // Identity is taken from the verified ID token, never from the request body.
+      const userId = await resolveConversationUserId(req.get("authorization"), threadId);
+      res.json(await socratesService.respond({ threadId, userId, message: message.trim(), mode, context, provider }));
     } catch (err: any) {
-      console.error("Gemini chat error:", err);
-      res.status(500).json({
-        error: "Failed to generate AI response",
-        details: err?.message || String(err),
-      });
+      console.error("Socrates chat error:", err);
+      if (err?.message === "CONVERSATION_FORBIDDEN") return res.status(403).json({ error: "Conversation is not available to this user" });
+      if (err?.code === "auth/argument-error" || err?.code?.startsWith?.("auth/")) return res.status(401).json({ error: "Invalid or expired sign-in token" });
+      // Provider errors carry a message written for students; stack traces stay in the server log.
+      if (err instanceof ProviderError) {
+        const status = err.reason === "offline" || err.reason === "model_missing" || err.reason === "not_configured" ? 503 : err.reason === "timeout" ? 504 : 502;
+        return res.status(status).json({ error: err.message, provider: err.providerId, reason: err.reason });
+      }
+      res.status(500).json({ error: "Failed to generate AI response" });
     }
   });
 
@@ -405,9 +376,12 @@ Make all 4 options believable and plausible (no joke options). Provide a solid c
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`⚡ StudiSpace server running on http://0.0.0.0:${PORT}`);
+  const server = app.listen(port, "0.0.0.0", () => {
+    console.log(`⚡ StudiSpace server running on http://0.0.0.0:${port}`);
   });
+  const shutdown = () => server.close(() => process.exit(0));
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
 }
 
 startServer().catch((err) => {

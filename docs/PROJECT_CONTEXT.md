@@ -89,7 +89,10 @@ The application is wrapped in an authenticated shell with a global Neo-Brutalist
   - Document context attachment (Firebase Storage upload + Google Drive Doc link parsing).
   - Save AI insight directly into Study Notes with one click.
 - **Current Status**: `IMPLEMENTED`.
-- **Key Components**: `src/components/SocratesChatView.tsx`, `/api/gemini/chat` in `server.ts`.
+- **Architecture**: `/api/socrates/chat` (with the legacy `/api/gemini/chat` alias) → `SocratesService` → `ProviderRouter` → LangGraph (`supervisor` → `context_node` → `tutor_node`) → selected `ModelProvider`.
+- **Providers**: Gemini and Ollama/Qwen3 implement the same provider interface. `AI_PROVIDERS` controls which runtimes are registered and `DEFAULT_AI_PROVIDER` controls the default; a request can select a provider per turn.
+- **Conversation persistence**: The server saves successful turns as `ConversationState` in Firestore collection `chats`. Without Firebase Admin credentials, local development falls back to an in-memory repository. Guest identity is scoped to its thread and is not durable.
+- **Key Components**: `src/components/SocratesChatView.tsx`, `server/socrates/graph.ts`, `server/socrates/service.ts`, `server/socrates/providers/`.
 
 ### 4.3 Planner & Assignments
 - **Purpose**: Track assignments, problem sets, exams, course weights, and estimated Pomodoro focus sprints.
@@ -349,7 +352,7 @@ export interface UserStats {
 | **Firebase Auth & Guest Mode** | `IMPLEMENTED` | Google Sign-in popup, email login/signup, instant Guest Scholar mode (`AuthContext.tsx`). |
 | **Global Shell & Header** | `IMPLEMENTED` | Gamified stats bar, level counter, active sound toggle, responsive navigation (`Header.tsx`). |
 | **Mission Control Dashboard** | `IMPLEMENTED` | Streak counter, 4-metric grid, continue study shortcuts, urgent assignments (`DashboardView.tsx`). |
-| **Socratic AI Tutor** | `IMPLEMENTED` | 5 tutoring modes, Gemini 3.7 Flash server endpoint, voice input/output (`SocratesChatView.tsx`). |
+| **Socratic AI Tutor** | `IMPLEMENTED` | 5 prompt modes, LangGraph orchestration, Gemini and Ollama/Qwen3 providers, conversation persistence, voice input/output. |
 | **Web Speech & Voice Tutor** | `IMPLEMENTED` | Web Speech API voice input, SpeechSynthesis voice output with clean markdown scrubbing. |
 | **Pomodoro Focus Desk** | `IMPLEMENTED` | 25/5/15m intervals, Planner task binding, session counter, confetti, chime notifications. |
 | **Pure Web Audio Soundscapes** | `IMPLEMENTED` | Zero-dependency Web Audio synthesizer with 6 ambient tracks and UI chimes (`audioSynthesizer.ts`). |
@@ -357,7 +360,7 @@ export interface UserStats {
 | **Study Notes & AI Summarizer** | `IMPLEMENTED` | Markdown editor, tags, search, and 5 Gemini note transformation actions (`NotesView.tsx`). |
 | **Quiz Arena & Sheets Export** | `IMPLEMENTED` | Multi-choice testing, streak XP multipliers, AI quiz generator, Google Sheets CSV export. |
 | **Assignments & Timeline** | `IMPLEMENTED` | Kanban status columns, priority badges, course weights, and Google Calendar sync button. |
-| **Firebase Cloud Storage** | `IMPLEMENTED` | File uploads to `documents/` path with Firestore metadata synchronization. |
+| **Firebase Cloud Storage** | `IMPLEMENTED` | Authenticated file uploads to `documents/` path with Firestore metadata synchronization; failed uploads fall back to a local object URL for the session. |
 | **Google Drive Context Picker** | `IMPLEMENTED` | Direct Google Docs URL import and context parsing for Socrates AI. |
 | **Gamified Badges & XP System** | `IMPLEMENTED` | Level progression formula (`Math.floor(xp / 500) + 1`), achievements modal (`BadgesModal.tsx`). |
 | **GPA & Grade Simulator** | `PARTIALLY IMPLEMENTED` | Assignment weights & target grades exist; dedicated cumulative GPA simulator planned. |
@@ -385,9 +388,20 @@ export interface UserStats {
             +------------------------------+                          |
                                                                       v
                                                           +-----------+-------------+
-                                                          | Google GenAI SDK        |
-                                                          |  - Model: gemini-3.7-flash
-                                                          |  - Server-side secrets  |
+                                                          | SocratesService         |
+                                                          | ProviderRouter          |
+                                                          +-----------+-------------+
+                                                                      v
+                                                          +-----------+-------------+
+                                                          | LangGraph              |
+                                                          | supervisor             |
+                                                          | context_node           |
+                                                          | tutor_node             |
+                                                          +-----------+-------------+
+                                                                      v
+                                                          +-----------+-------------+
+                                                          | ModelProvider          |
+                                                          | Gemini | Ollama/Qwen3  |
                                                           +-------------------------+
 ```
 
@@ -396,13 +410,16 @@ export interface UserStats {
 - **Animations & FX**: `motion` (layout/transitions), `canvas-confetti` (level ups, quiz & pomodoro completions).
 - **Icons**: `lucide-react`.
 - **Backend Service**: Express 4 running on Node.js via `server.ts`. Bound strictly to port `3000` and host `0.0.0.0`.
-- **AI Integration**: `@google/genai` TypeScript SDK invoking `gemini-3.7-flash` exclusively on the backend (`server.ts`).
+- **AI Integration**: Provider abstraction for Gemini (`gemini-3.7-flash`) and Ollama/Qwen3 (`qwen3:4b`), invoked by the LangGraph tutor node on the backend.
 - **Database & Auth**: Firebase Auth + Cloud Firestore + Firebase Storage.
 - **Audio Engine**: Pure Web Audio API (`AudioContext`, `BiquadFilterNode`, `OscillatorNode`, `ChannelMergerNode`).
 - **Speech Engine**: Browser Native Web Speech API (`webkitSpeechRecognition` & `speechSynthesis`).
 
 ### Environment Variables
-- `GEMINI_API_KEY`: Server-side secret injected by AI Studio for Gemini generation.
+- `GEMINI_API_KEY`: Server-side secret for Gemini-backed generation; production requires it.
+- `AI_PROVIDERS`: Comma-separated registered runtimes, normally both locally and `gemini` in Cloud Run.
+- `DEFAULT_AI_PROVIDER`: Runtime used when a chat request does not name one.
+- `OLLAMA_BASE_URL`, `OLLAMA_MODEL`: Local Ollama endpoint and model, normally `http://localhost:11434` and `qwen3:4b`.
 - `APP_URL`: Container service URL.
 - `VITE_FIREBASE_*`: Client-side Firebase credentials declared in `.env.example` and `src/utils/firebase.ts`.
 
@@ -453,8 +470,8 @@ export interface UserStats {
 
 1. **Neo-Brutalist Visual Identity Is Permanent**:
    The tactile, high-contrast, black-bordered visual language is central to the StudiSpace brand. Do not alter this for generic pastel SaaS themes.
-2. **Server-Side Gemini Proxying**:
-   The Gemini API key is never exposed to the client. All generative capabilities (`/api/gemini/chat`, `/api/gemini/generate-flashcards`, `/api/gemini/generate-quiz`, `/api/gemini/transform-note`) reside in `server.ts`.
+2. **Server-Side AI Providers**:
+  Model keys and provider calls stay on the server. Socratic chat uses `/api/socrates/chat` (with `/api/gemini/chat` retained as a compatibility alias), while the flashcard, quiz, and note-generation endpoints currently use Gemini and provide deterministic fallbacks when no Gemini key is configured.
 3. **Planner as the Ground Truth for Tasks**:
    `Assignment` items are the single source of truth for academic tasks. Dashboard's "Today's Focus" and Pomodoro's active session title derive from this list.
 4. **Google Ecosystem Integrations**:
@@ -514,7 +531,7 @@ Before making any code changes, any future AI agent **MUST**:
 ## 15. Important Terminology
 
 - **StudiSpace**: The all-in-one student workspace and personal Learning OS.
-- **Socrates AI**: The pedagogical study mentor powered by Gemini that prompts critical inquiry rather than answer dumping.
+- **Socrates AI**: The pedagogical study mentor using five prompt modes, LangGraph orchestration, and a selected Gemini or local Qwen3/Ollama provider.
 - **Focus Sprint**: A 25-minute Pomodoro study block tied to a specific academic assignment.
 - **Active Recall**: The testing methodology used in Flashcards and Quiz Arena to reinforce memory retention.
 - **Soundscape**: Synthesized ambient audio generated in real time using the browser Web Audio API.
@@ -531,3 +548,41 @@ Before making any code changes, any future AI agent **MUST**:
 - Documented technical stack (React 19, Vite 6, Tailwind CSS v4, Express, Firebase Firestore/Storage/Auth, Gemini 3.7 Flash).
 - Documented Google Workspace integrations (Calendar Sync, Sheets Export, Drive Picker) and Web Audio synthesizer engine.
 - Outlined MVP boundaries, domain entities, known gaps, and future roadmap.
+
+### 2026-08-27
+- Replaced the Socrates AI server endpoint's single-call flow with a LangGraph conversation workflow, mode routing, optional study context, and Firestore-backed thread persistence in `chats`.
+- Added production Docker packaging, Compose-based local container startup, environment validation, and GitHub Actions CI.
+- Added runtime Firebase web configuration so Docker and Cloud Run can inject browser-safe Firebase values without rebuilding the image, plus a standalone local development guide.
+
+### 2026-08-27 (authentication & conversation isolation hardening)
+- `/api/gemini/chat` now derives the conversation owner from a verified Firebase ID token (`server/socrates/identity.ts`) instead of trusting a `userId` field in the request body, which previously let any caller read or extend another student's thread. Guest Scholar callers stay supported but are namespaced to `guest:<threadId>`.
+- `SocratesChatView` sends `Authorization: Bearer <idToken>` and no longer sends `userId`.
+- Firebase Admin initialization moved to a single shared `server/firebaseAdmin.ts` used by both conversation persistence and token verification, with `ignoreUndefinedProperties` enabled so optional conversation fields persist.
+- `firestore.rules` rewritten to least privilege: `users`, `chats`, and `documents` are owner-only (a `documents` rule was missing entirely), and the shared study collections now require sign-in instead of allowing anonymous read/write. **These rules must be deployed** — the project was still running Firebase's default test-mode ruleset.
+- `subscribeToChats` / `subscribeToDocuments` are scoped with `where("userId", "==", uid)` and sort client-side. The previous `where("userId", "in", [uid, "guest"]) + orderBy(...)` form both required an undeployed composite index and could never satisfy owner-only rules, so chat history never loaded.
+- `AuthContext` no longer races itself on sign-up: `onAuthStateChanged` and `signUpWithEmail` both created `users/{uid}`, so the generic defaults could overwrite the student's chosen name, major and term.
+- Firebase Auth error wording extracted to `src/utils/authErrors.ts` and unit tested; added `server/socrates/identity.test.ts` and client-side tests to the suite.
+
+### 2026-08-27 (local open-source model runtime: Ollama + Qwen3)
+- Added a model provider abstraction in `server/socrates/providers/`: one `ModelProvider` interface, a `ProviderRouter`, and two implementations (`GeminiProvider`, `OllamaProvider`). Providers normalize their own wire formats into `{ text, usage }`, so callers never see Gemini `candidates[]` or Ollama `message.content`.
+- `OllamaProvider` talks to a local Ollama server (default `http://localhost:11434`, model `qwen3:4b`). No API key: Ollama runs on the host. It requests `think: true` so Qwen3's reasoning is returned separately in `message.thinking` rather than leaking into the answer, and strips any `</think>` remnant defensively.
+- The LangGraph is now provider-agnostic and restructured as `supervisor → context_node → tutor_node`, dispatching on `state.agent` through a conditional edge. This is the seam for future Evaluator / Retrieval / Study Planner / Quiz agents; the five tutoring modes remain mode *configuration*, not duplicated implementations.
+- `ConversationState` records `provider`. Provider is chosen per turn, so a thread can switch between Gemini and Qwen3 without losing history or changing `threadId`.
+- New `GET /api/ai/providers` reports per-runtime availability (no keys, no URLs). Ollama availability requires a reachable server **and** the configured model to be installed.
+- `POST /api/gemini/chat` accepts an optional `provider`; `ProviderError` reasons map to 503/504/502 with student-facing messages while stack traces stay in the server log.
+- Socrates AI gained a **Model:** switcher above the mode tabs (`☁️ Gemini` / `🖥️ Qwen3 Local`) with 20-second availability polling. An unavailable runtime is disabled and labelled `— Offline`, and the client refuses to send a request that is certain to fail.
+- Fixed the `npm test` glob: `server/**/*.test.ts` was shell-expanded without globstar, so tests in nested directories were silently never run.
+- New docs: `docs/LOCAL_LLM.md` and `docs/SOCRATIC_AI_LANGGRAPH.md`.
+
+### 2026-08-27 (stabilization, browser E2E, real CI/CD, production deployment)
+- **Failed turns are no longer persisted.** The client used to write both the user message and a fabricated "Socrates couldn't answer" assistant message to Firestore on every provider failure, so an outage permanently corrupted the transcript and made it drift from the server-side `ConversationState` (which is only written on success). A turn is now stored only once the model has answered, and both halves are written together.
+- **Firestore snapshots merge instead of replacing.** A remote update no longer deletes the in-flight turn or a session-only error notice; those are tracked in `sessionOnlyIds`.
+- **Provider availability reflects observed outages.** A configured `GEMINI_API_KEY` is not evidence Gemini can answer: with the daily free tier spent it still reported `available: true`, so the UI pre-selected a runtime that always failed — the main reason the manual test flow could not be completed. A 429 now marks Gemini unavailable until the next midnight US Pacific, a 503 for two minutes, and a success clears it.
+- **The client no longer hard-codes a default provider**; it adopts `defaultProvider` from `GET /api/ai/providers`.
+- **`AI_PROVIDERS`** makes the offered runtimes explicit per deployment. Production sets `AI_PROVIDERS=gemini` (Strategy A) so a cloud container never advertises a "Qwen3 Local" button pointing at its own `localhost:11434`.
+- **Provider-neutral route** `POST /api/socrates/chat`; `/api/gemini/chat` remains as an alias. Stale "Powered by Google Gemini 2.5" branding replaced.
+- **Browser E2E added** (Playwright), deliberately split: `npm run test:e2e` is hermetic and runs in CI; `npm run test:e2e:local` drives the real journey against Firebase and live Qwen3.
+- **`npm test` glob fixed** — `server/**/*.test.ts` was shell-expanded without globstar, so tests in nested directories were silently never running.
+- **CI/CD is now a real pipeline**: `ci.yml` is a quality gate (lint, unit, hermetic E2E, build, Docker build + `/health` smoke test); `deploy.yml` builds, publishes, deploys to Cloud Run, health-checks and rolls back. Secrets come from GitHub Secrets and Secret Manager, never YAML.
+- **Production deployment is configured** in `.github/workflows/deploy.yml` for Cloud Run: it publishes to Artifact Registry, injects Gemini from Secret Manager, advertises Gemini only, checks `/health` and `/api/ai/providers`, and rolls traffic back if the rollout check fails. A live deployment is not verified by local validation.
+- New doc: `docs/DEPLOYMENT.md`.

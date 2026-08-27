@@ -16,6 +16,7 @@ import {
   Lightbulb,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
+import { describeAuthError } from "../utils/authErrors";
 import { soundEngine } from "../utils/audioSynthesizer";
 
 const MAJORS = [
@@ -62,7 +63,7 @@ export const LoginView: React.FC = () => {
       soundEngine.playChime("levelup");
     } catch (err: any) {
       console.error("Google Auth failed:", err);
-      setErrorMessage(err.message || "Failed to sign in with Google.");
+      setErrorMessage(describeAuthError(err));
     } finally {
       setIsSubmitting(false);
     }
@@ -103,15 +104,7 @@ export const LoginView: React.FC = () => {
       soundEngine.playChime("levelup");
     } catch (err: any) {
       console.error("Auth error:", err);
-      let msg = err.message || "Authentication error occurred.";
-      if (err.code === "auth/invalid-credential" || err.code === "auth/wrong-password") {
-        msg = "Invalid email or password. Check your credentials or sign up.";
-      } else if (err.code === "auth/email-already-in-use") {
-        msg = "This email is already registered. Try signing in instead.";
-      } else if (err.code === "auth/weak-password") {
-        msg = "Password should be at least 6 characters.";
-      }
-      setErrorMessage(msg);
+      setErrorMessage(describeAuthError(err));
     } finally {
       setIsSubmitting(false);
     }
@@ -597,7 +590,7 @@ export const LoginView: React.FC = () => {
         <div className="flex items-center gap-4 mt-1 sm:mt-0 font-mono text-[11px]">
           <span>FIREBASE SECURE CLOUD</span>
           <span>•</span>
-          <span>GEMINI 2.5 INTEGRATION</span>
+          <span>GEMINI + LOCAL QWEN3</span>
         </div>
       </footer>
     </div>
