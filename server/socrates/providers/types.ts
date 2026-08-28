@@ -15,7 +15,13 @@ export function isModelProviderId(value: unknown): value is ModelProviderId {
  * Models a student can actually pick, at model granularity rather than runtime
  * granularity. Selecting "gemini" and quietly resolving it to whichever Gemini
  * build the server happens to be configured with hides a real difference — the
- * hosted 3.x model is developer-only, the 2.5 model is what every student gets.
+ * hosted 3.x model is developer-only, the free one is what every student gets.
+ *
+ * These ids are stable routing keys, named after each slot's *default* model.
+ * A deployment may point a slot at another model through `GEMINI_FREE_MODEL` /
+ * `GEMINI_DEVELOPER_MODEL`, in which case the id keeps its name while the
+ * `model` field of the descriptor — and the label the student reads — follow
+ * what the server actually calls. The descriptor's `model` is always the truth.
  */
 export const AI_MODEL_IDS = ["gemini-2.5-flash", "gemini-3.7-flash", "qwen3-local"] as const;
 export type AiModelId = (typeof AI_MODEL_IDS)[number];
