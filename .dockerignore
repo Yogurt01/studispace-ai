@@ -6,6 +6,11 @@ build
 .env
 .env.*
 !.env.example
+# Credentials must never enter the build context, let alone a layer.
+*service-account*.json
+firebase-service-account.json
+*.pem
+.git-credentials
 *.log
 coverage
 .vscode

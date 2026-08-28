@@ -1,14 +1,19 @@
 name: Deploy
 
 # Real deployment pipeline for the production branch:
-#   quality gate -> build image -> publish -> deploy -> health check
+#   quality gate -> build image -> publish -> deploy with NO traffic
+#   -> health check the candidate -> promote -> verify the public domain
 #
-# Every credential comes from GitHub Secrets; none are written in this file.
-# Required repository secrets (see docs/DEPLOYMENT.md):
+# Traffic only moves after the new revision has proved itself, so a broken build
+# never becomes the production revision in the first place.
+#
+# Every credential comes from GitHub Secrets or Google Secret Manager; none are
+# written in this file. Required repository secrets (see docs/DEPLOYMENT.md):
 #   GCP_PROJECT_ID, GCP_REGION, GCP_SERVICE_NAME
 #   GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT   (keyless auth)
-#   GEMINI_API_KEY
 #   VITE_FIREBASE_* (browser-safe, injected at runtime)
+# Required Secret Manager entries, mounted straight into the service:
+#   GEMINI_API_KEY, DEVELOPER_MODE_PASSWORD
 on:
   push:
     branches: [main]
@@ -22,6 +27,11 @@ permissions:
   contents: read
   id-token: write # required for keyless Google auth
 
+env:
+  # The canonical public address. Cloud Run's own *.run.app URL is an
+  # implementation detail and must not leak into the application's links.
+  PUBLIC_URL: https://studispace.ai.studio
+
 jobs:
   quality-gate:
     name: Quality gate
@@ -33,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: production
-      url: ${{ steps.deploy.outputs.url }}
+      url: https://studispace.ai.studio
     steps:
       - uses: actions/checkout@v4
 
@@ -48,70 +58,140 @@ jobs:
       - name: Configure Artifact Registry
         run: gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
 
+      # Recorded before anything changes, so a rollback targets the revision that
+      # was actually serving rather than "whatever happens to be second newest".
+      - name: Record the currently serving revision
+        id: current
+        run: |
+          CURRENT=$(gcloud run services describe "${{ secrets.GCP_SERVICE_NAME }}" \
+            --project="${{ secrets.GCP_PROJECT_ID }}" --region="${{ secrets.GCP_REGION }}" \
+            --format='value(status.traffic[0].revisionName)' 2>/dev/null || true)
+          echo "revision=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "Currently serving: ${CURRENT:-<none, first deploy>}"
+
       - name: Build and publish image
         id: image
         run: |
+          # Tagged by commit, never :latest — every revision traces to a commit.
           IMAGE="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/studispace/studispace:${GITHUB_SHA}"
           docker build --tag "$IMAGE" .
           docker push "$IMAGE"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy to Cloud Run
+      - name: Deploy a candidate revision with no traffic
         id: deploy
         run: |
-          # Production runs Gemini only: there is no Ollama process in this
-          # container, and localhost inside it is not a developer's laptop.
+          TAG="c-$(echo "$GITHUB_SHA" | cut -c1-7)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          # --port is stated explicitly: gcloud keeps a service's existing container
+          # port when the flag is omitted, so a service still configured for the old
+          # 3000 would be pointed at an image that now listens on 8080. 8080 is Cloud
+          # Run's own default and matches the PORT it injects.
+          #
+          # One --set-env-vars flag on purpose: gcloud does not accumulate repeated
+          # occurrences of it, so a second flag silently discards the first. The
+          # ^@^ prefix switches the separator to @, keeping commas usable in values.
+          #
+          # Production runs Gemini only. There is no Ollama process in this
+          # container and localhost inside it is not a developer's laptop, so
+          # Qwen3 must not be advertised as reachable. It stays visible in the
+          # selector as a developer-only option that reports why it is offline.
           gcloud run deploy "${{ secrets.GCP_SERVICE_NAME }}" \
             --image="${{ steps.image.outputs.image }}" \
             --project="${{ secrets.GCP_PROJECT_ID }}" \
             --region="${{ secrets.GCP_REGION }}" \
             --platform=managed \
             --allow-unauthenticated \
-            --port=3000 \
-            --set-env-vars="NODE_ENV=production,AI_PROVIDERS=gemini" \
-            --set-env-vars="VITE_FIREBASE_API_KEY=${{ secrets.VITE_FIREBASE_API_KEY }}" \
-            --set-env-vars="VITE_FIREBASE_AUTH_DOMAIN=${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}" \
-            --set-env-vars="VITE_FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}" \
-            --set-env-vars="VITE_FIREBASE_STORAGE_BUCKET=${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}" \
-            --set-env-vars="VITE_FIREBASE_MESSAGING_SENDER_ID=${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}" \
-            --set-env-vars="VITE_FIREBASE_APP_ID=${{ secrets.VITE_FIREBASE_APP_ID }}" \
-            --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest"
-          URL=$(gcloud run services describe "${{ secrets.GCP_SERVICE_NAME }}" \
-            --project="${{ secrets.GCP_PROJECT_ID }}" --region="${{ secrets.GCP_REGION }}" \
-            --format='value(status.url)')
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-          gcloud run services update "${{ secrets.GCP_SERVICE_NAME }}" \
-            --project="${{ secrets.GCP_PROJECT_ID }}" --region="${{ secrets.GCP_REGION }}" \
-            --update-env-vars="APP_URL=$URL" --quiet
+            --port=8080 \
+            --no-traffic \
+            --tag="$TAG" \
+            --set-env-vars="^@^NODE_ENV=production@AI_PROVIDERS=gemini@APP_URL=${PUBLIC_URL}@GEMINI_FREE_MODEL=${{ vars.GEMINI_FREE_MODEL || 'gemini-3.5-flash' }}@GEMINI_DEVELOPER_MODEL=${{ vars.GEMINI_DEVELOPER_MODEL || 'gemini-3.7-flash' }}@VITE_FIREBASE_API_KEY=${{ secrets.VITE_FIREBASE_API_KEY }}@VITE_FIREBASE_AUTH_DOMAIN=${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}@VITE_FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}@VITE_FIREBASE_STORAGE_BUCKET=${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}@VITE_FIREBASE_MESSAGING_SENDER_ID=${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}@VITE_FIREBASE_APP_ID=${{ secrets.VITE_FIREBASE_APP_ID }}" \
+            --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest,DEVELOPER_MODE_PASSWORD=DEVELOPER_MODE_PASSWORD:latest"
 
-      - name: Health check the rollout
+          REVISION=$(gcloud run services describe "${{ secrets.GCP_SERVICE_NAME }}" \
+            --project="${{ secrets.GCP_PROJECT_ID }}" --region="${{ secrets.GCP_REGION }}" \
+            --format='value(status.latestCreatedRevisionName)')
+          CANDIDATE_URL=$(gcloud run services describe "${{ secrets.GCP_SERVICE_NAME }}" \
+            --project="${{ secrets.GCP_PROJECT_ID }}" --region="${{ secrets.GCP_REGION }}" \
+            --format=json | jq -r --arg t "$TAG" '.status.traffic[] | select(.tag==$t) | .url')
+          echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
+          echo "candidate_url=$CANDIDATE_URL" >> "$GITHUB_OUTPUT"
+          echo "Candidate $REVISION is live at $CANDIDATE_URL with no production traffic."
+
+      - name: Verify the candidate before it takes traffic
         run: |
-          URL="${{ steps.deploy.outputs.url }}"
-          echo "Checking $URL/health"
+          URL="${{ steps.deploy.outputs.candidate_url }}"
+          [ -n "$URL" ] || { echo "::error::candidate URL was not resolved"; exit 1; }
+
           for i in $(seq 1 30); do
-            if curl -fsS "$URL/health" | grep -q '"status":"ok"'; then
-              echo "health check passed"
-              # The deployment must advertise a runtime it can actually reach.
-              curl -fsS "$URL/api/ai/providers"
+            curl -fsS "$URL/health" | grep -q '"status":"ok"' && break
+            if [ "$i" = 30 ]; then echo "::error::candidate never became healthy"; exit 1; fi
+            sleep 5
+          done
+          echo "health check passed"
+
+          # The outage this pipeline exists to prevent: a dev server in production.
+          HOME_PAGE=$(curl -fsS "$URL/") || { echo "::error::candidate did not serve a home page"; exit 1; }
+          case "$HOME_PAGE" in
+            *"Blocked request"*) echo "::error::candidate is running the Vite dev server"; exit 1 ;;
+          esac
+
+          # It must advertise a catalogue it can actually serve.
+          MODELS=$(curl -fsS "$URL/api/ai/models") || { echo "::error::/api/ai/models unreachable"; exit 1; }
+          echo "$MODELS" | jq -e '[.models[] | select(.tier=="free" and .available)] | length > 0' > /dev/null \
+            || { echo "::error::no free model is available in production"; exit 1; }
+          echo "$MODELS" | jq -e '.models[] | select(.id=="qwen3-local") | .locked' > /dev/null \
+            || { echo "::error::Qwen3 is not locked in production"; exit 1; }
+          echo "$MODELS" | jq -e '.developerMode.configured' > /dev/null \
+            || { echo "::error::DEVELOPER_MODE_PASSWORD is not configured in production"; exit 1; }
+
+          # Server secrets must not reach the browser.
+          if curl -fsS "$URL/runtime-config.js" | grep -qE 'GEMINI_API_KEY|DEVELOPER_MODE_PASSWORD|private_key'; then
+            echo "::error::runtime-config.js leaked a server secret"
+            exit 1
+          fi
+          echo "candidate verified"
+
+      - name: Promote the candidate to 100% traffic
+        run: |
+          gcloud run services update-traffic "${{ secrets.GCP_SERVICE_NAME }}" \
+            --project="${{ secrets.GCP_PROJECT_ID }}" --region="${{ secrets.GCP_REGION }}" \
+            --to-revisions="${{ steps.deploy.outputs.revision }}=100" --quiet
+
+      - name: Verify the public domain
+        id: public
+        run: |
+          for i in $(seq 1 20); do
+            if curl -fsS "${PUBLIC_URL}/health" | grep -q '"status":"ok"'; then
+              PAGE=$(curl -fsS "${PUBLIC_URL}/")
+              case "$PAGE" in
+                *"Blocked request"*) echo "::error::${PUBLIC_URL} is serving a Vite dev server"; exit 1 ;;
+              esac
+              echo "${PUBLIC_URL} is healthy and serving the built app"
               exit 0
             fi
             sleep 5
           done
-          echo "::error::Health check failed after rollout"
+          echo "::error::${PUBLIC_URL} did not become healthy after promotion"
           exit 1
 
-      - name: Roll back on failed health check
-        if: failure()
+      # Only reachable if traffic was already moved and the public domain then
+      # failed. A candidate that fails verification never gets here, because it
+      # never received traffic.
+      - name: Roll back to the previously serving revision
+        if: failure() && steps.public.outcome == 'failure' && steps.current.outputs.revision != ''
         run: |
-          echo "::warning::Deployment failed its health check; routing traffic back to the previous revision."
-          PREVIOUS=$(gcloud run revisions list \
-            --service="${{ secrets.GCP_SERVICE_NAME }}" \
-            --project="${{ secrets.GCP_PROJECT_ID }}" \
-            --region="${{ secrets.GCP_REGION }}" \
-            --format='value(metadata.name)' --sort-by='~metadata.creationTimestamp' | sed -n '2p')
-          if [ -n "$PREVIOUS" ]; then
-            gcloud run services update-traffic "${{ secrets.GCP_SERVICE_NAME }}" \
-              --project="${{ secrets.GCP_PROJECT_ID }}" \
-              --region="${{ secrets.GCP_REGION }}" \
-              --to-revisions="$PREVIOUS=100"
-          fi
+          echo "::warning::Public verification failed; routing traffic back to ${{ steps.current.outputs.revision }}."
+          gcloud run services update-traffic "${{ secrets.GCP_SERVICE_NAME }}" \
+            --project="${{ secrets.GCP_PROJECT_ID }}" --region="${{ secrets.GCP_REGION }}" \
+            --to-revisions="${{ steps.current.outputs.revision }}=100" --quiet
+
+      # Tags accumulate on the service and each one is a permanent public URL for
+      # that revision; drop it once traffic no longer depends on it.
+      - name: Remove the candidate tag
+        if: always() && steps.deploy.outputs.tag != ''
+        run: |
+          gcloud run services update-traffic "${{ secrets.GCP_SERVICE_NAME }}" \
+            --project="${{ secrets.GCP_PROJECT_ID }}" --region="${{ secrets.GCP_REGION }}" \
+            --remove-tags="${{ steps.deploy.outputs.tag }}" --quiet || true

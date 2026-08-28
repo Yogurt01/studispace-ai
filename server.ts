@@ -1,5 +1,6 @@
 import express from "express";
 import path from "path";
+import { existsSync } from "fs";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
@@ -20,11 +21,16 @@ import { SocratesService } from "./server/socrates/service";
 
 dotenv.config();
 
+/** True only for an explicit development run; see the serving branch in startServer. */
+const isDevelopment = process.env.NODE_ENV === "development";
+
 function getRuntimeConfig() {
-  const port = Number(process.env.PORT || 3000);
+  const port = Number(process.env.PORT || 8080);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("PORT must be a valid TCP port");
-  if (process.env.NODE_ENV === "production" && !process.env.GEMINI_API_KEY) {
-    throw new Error("GEMINI_API_KEY is required when NODE_ENV=production");
+  // Same rule as the serving branch: anything that is not explicitly development
+  // is a real deployment, and a real deployment without a key cannot answer.
+  if (!isDevelopment && !process.env.GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is required unless NODE_ENV=development");
   }
   return { port };
 }
@@ -534,8 +540,20 @@ Make all 4 options believable and plausible (no joke options). Provide a solid c
     }
   });
 
-  // Vite middleware in dev or static files in production
-  if (process.env.NODE_ENV !== "production") {
+  // How the frontend is served.
+  //
+  // This opts *in* to the development server rather than out of it. The earlier
+  // rule was `NODE_ENV !== "production"`, which meant any host that did not set
+  // NODE_ENV — a container image, a buildpack, a managed runtime — silently got
+  // a Vite dev server on the public internet. That is how production ended up
+  // answering every page with Vite's "Blocked request. This host is not
+  // allowed." Its host check was the only thing standing between the internet
+  // and a dev server that serves raw sources and arbitrary files over /@fs, so
+  // allowlisting the production host there would have published the source tree
+  // instead of fixing anything. Anything that is not explicitly development
+  // serves the built assets.
+  if (isDevelopment) {
+    console.log("Serving the Vite development server (NODE_ENV=development).");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -543,9 +561,19 @@ Make all 4 options believable and plausible (no joke options). Provide a solid c
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
+    const indexPath = path.join(distPath, "index.html");
+    // Fail loudly rather than serving 404s for every page: a missing build is an
+    // operator error, and it must not look like an application bug at 3am.
+    if (!existsSync(indexPath)) {
+      throw new Error(
+        `No production build found at ${indexPath}. Run "npm run build" before starting, ` +
+          `or set NODE_ENV=development to use the Vite dev server.`
+      );
+    }
+    console.log(`Serving the production build from ${distPath}.`);
     app.use(express.static(distPath));
     app.get("*", (_req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+      res.sendFile(indexPath);
     });
   }
 

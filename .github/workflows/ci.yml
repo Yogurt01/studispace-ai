@@ -17,6 +17,10 @@ concurrency:
   group: ${{ github.workflow }}-quality-gate-${{ github.ref }}
   cancel-in-progress: true
 
+# Read-only by default; nothing here writes to the repository.
+permissions:
+  contents: read
+
 jobs:
   verify:
     name: Lint, test, build
@@ -90,24 +94,63 @@ jobs:
 
       - name: Smoke test the image
         run: |
-          docker run -d --name studispace-ci -p 3000:3000 \
-            -e NODE_ENV=production \
-            -e PORT=3000 \
+          # No NODE_ENV here on purpose: the image must serve the production
+          # build on its own. Passing NODE_ENV=production would hide exactly the
+          # misconfiguration that put a Vite dev server into production.
+          docker run -d --name studispace-ci -p 8080:8080 \
             -e GEMINI_API_KEY=ci-placeholder \
             -e AI_PROVIDERS=gemini \
+            -e DEVELOPER_MODE_PASSWORD=ci-placeholder-developer-password \
             -e VITE_FIREBASE_API_KEY=ci-placeholder-api-key \
             -e VITE_FIREBASE_PROJECT_ID=ci-placeholder \
             studispace:ci
+
           for i in $(seq 1 30); do
-            if curl -fsS http://localhost:3000/health > /dev/null; then
-              echo "health check passed"
-              curl -fsS http://localhost:3000/runtime-config.js | head -c 200
+            curl -fsS http://localhost:8080/health > /dev/null && break
+            if [ "$i" = 30 ]; then
+              echo "::error::health check never passed"
+              docker logs studispace-ci
               docker rm -f studispace-ci
-              exit 0
+              exit 1
             fi
             sleep 2
           done
-          echo "health check never passed; container logs:"
-          docker logs studispace-ci
+          echo "health check passed"
+
+          fail() { echo "::error::$1"; docker logs studispace-ci; docker rm -f studispace-ci; exit 1; }
+
+          # Regression test for the production outage: the container must serve
+          # the built app under the real public hostname. A Vite dev server
+          # answers this with 403 "Blocked request. This host is not allowed."
+          HOME_PAGE=$(curl -fsS -H "Host: studispace.ai.studio" http://localhost:8080/) \
+            || fail "the container refused the production Host header"
+          case "$HOME_PAGE" in
+            *"Blocked request"*) fail "a Vite dev server is serving this image" ;;
+            *"<div id=\"root\">"*) echo "production build served under the production hostname" ;;
+            *) fail "unexpected home page; not the built index.html" ;;
+          esac
+
+          # The built client must be present and static, not transformed on the fly.
+          ASSET=$(printf '%s' "$HOME_PAGE" | grep -o '/assets/[^"]*\.js' | head -1)
+          [ -n "$ASSET" ] || fail "index.html references no hashed client bundle"
+          curl -fsS -o /dev/null -H "Host: studispace.ai.studio" "http://localhost:8080$ASSET" \
+            || fail "hashed client bundle $ASSET is not served"
+
+          # Browser-safe config only, and the model catalogue must be reachable.
+          CONFIG=$(curl -fsS http://localhost:8080/runtime-config.js) || fail "runtime-config.js unreachable"
+          case "$CONFIG" in
+            *GEMINI_API_KEY*|*DEVELOPER_MODE_PASSWORD*|*private_key*|*ci-placeholder-developer-password*)
+              fail "runtime-config.js leaked a server secret" ;;
+          esac
+
+          MODELS=$(curl -fsS http://localhost:8080/api/ai/models) || fail "/api/ai/models unreachable"
+          echo "$MODELS" | grep -q '"id":"gemini-2.5-flash"' || fail "free model missing from the catalogue"
+          echo "$MODELS" | grep -q '"tier":"developer"' || fail "developer tier missing from the catalogue"
+
+          # A developer model must be refused without a developer token.
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/api/socrates/chat \
+            -H 'Content-Type: application/json' \
+            -d '{"threadId":"ci","message":"hi","mode":"socratic","model":"qwen3-local"}')
+          [ "$STATUS" = "403" ] || fail "developer model was not refused without a token (HTTP $STATUS)"
+
           docker rm -f studispace-ci
-          exit 1

@@ -70,7 +70,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
     const datesParam = `${formatGCalDate(startDate)}/${formatGCalDate(endDate)}`;
     const title = `[StudiSpace Study Sprint] ${item.title} (${item.subject})`;
-    const details = `📚 Subject: ${item.subject}\n⚡ Priority: ${item.priority.toUpperCase()}\n🎯 Target Grade: ${item.gradeTarget || "A"}\n⏱️ Estimated Focus: ${item.estimatedPomodoros} Pomodoro Sprints\n📝 Notes: ${item.notes || "Prepared in StudiSpace Study OS"}\n\n🔗 StudiSpace App: https://ais-dev-4iae4eyzvb3yjyetfu24q3-55980572059.asia-east1.run.app`;
+    const details = `📚 Subject: ${item.subject}\n⚡ Priority: ${item.priority.toUpperCase()}\n🎯 Target Grade: ${item.gradeTarget || "A"}\n⏱️ Estimated Focus: ${item.estimatedPomodoros} Pomodoro Sprints\n📝 Notes: ${item.notes || "Prepared in StudiSpace Study OS"}\n\n🔗 StudiSpace App: ${window.location.origin}`;
     const location = "StudiSpace Study Hub / Virtual Desk";
 
     const gcalUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(

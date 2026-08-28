@@ -5,7 +5,7 @@ import { InMemoryConversationRepository } from "./persistence";
 import { ProviderRouter } from "./providers/router";
 import { StubProvider } from "./providers/testing";
 import { SocratesService } from "./service";
-import { SOCRATES_MODES } from "./types";
+import { ConversationRepository, SOCRATES_MODES } from "./types";
 
 /** A router with both runtimes stubbed, so routing is exercised without any network. */
 function makeRouter(overrides: { gemini?: StubProvider; ollama?: StubProvider } = {}) {
@@ -137,6 +137,21 @@ test("omitting the model uses the free default, not a locked one", async () => {
   assert.equal(result.model, "gemini-2.5-flash");
   assert.equal(gemini.calls.length, 1);
   assert.equal(ollama.calls.length, 0);
+});
+
+test("a locked model is refused before the conversation is ever loaded", async () => {
+  // A datastore outage must not turn a clean refusal into a 500, and an
+  // unauthorized request must not reach the database on its way to being denied.
+  const exploding: ConversationRepository = {
+    load: async () => { throw new Error("datastore unavailable"); },
+    save: async () => { throw new Error("datastore unavailable"); },
+  };
+  const { router } = makeRouter();
+  const service = new SocratesService(exploding, router);
+  await assert.rejects(
+    () => service.respond({ threadId: "locked", userId: "owner", message: "hi", mode: "socratic", model: "qwen3-local" }),
+    (err: any) => err.name === "ModelAccessError"
+  );
 });
 
 test("a developer-only model is refused unless developer access is proven", async () => {
