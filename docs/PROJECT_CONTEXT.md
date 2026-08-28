@@ -90,7 +90,9 @@ The application is wrapped in an authenticated shell with a global Neo-Brutalist
   - Save AI insight directly into Study Notes with one click.
 - **Current Status**: `IMPLEMENTED`.
 - **Architecture**: `/api/socrates/chat` (with the legacy `/api/gemini/chat` alias) → `SocratesService` → `ProviderRouter` → LangGraph (`supervisor` → `context_node` → `tutor_node`) → selected `ModelProvider`.
-- **Providers**: Gemini and Ollama/Qwen3 implement the same provider interface. `AI_PROVIDERS` controls which runtimes are registered and `DEFAULT_AI_PROVIDER` controls the default; a request can select a provider per turn.
+- **Models**: selection is per model, not per runtime. The catalogue is fixed at three entries — `gemini-2.5-flash` (free, always the default), `gemini-3.7-flash` (Developer Mode) and `qwen3-local` (Developer Mode) — and a request may name one per turn.
+- **Access control**: `ProviderRouter.resolve` refuses a developer-tier model unless the caller passes proven developer access, so the rule holds for every caller rather than only the HTTP route. `/api/developer/unlock` trades `DEVELOPER_MODE_PASSWORD` for a short-lived HMAC-signed token, which the browser holds in memory only and presents as `X-Developer-Token`. The UI padlock is presentation; the server is the gate.
+- **Runtimes**: Gemini and Ollama/Qwen3 implement the same provider interface. `AI_PROVIDERS` controls which runtimes are usable; a model whose runtime is off is listed as unavailable rather than hidden.
 - **Conversation persistence**: The server saves successful turns as `ConversationState` in Firestore collection `chats`. Without Firebase Admin credentials, local development falls back to an in-memory repository. Guest identity is scoped to its thread and is not durable.
 - **Key Components**: `src/components/SocratesChatView.tsx`, `server/socrates/graph.ts`, `server/socrates/service.ts`, `server/socrates/providers/`.
 
@@ -410,7 +412,7 @@ export interface UserStats {
 - **Animations & FX**: `motion` (layout/transitions), `canvas-confetti` (level ups, quiz & pomodoro completions).
 - **Icons**: `lucide-react`.
 - **Backend Service**: Express 4 running on Node.js via `server.ts`. Bound strictly to port `3000` and host `0.0.0.0`.
-- **AI Integration**: Provider abstraction for Gemini (`gemini-3.7-flash`) and Ollama/Qwen3 (`qwen3:4b`), invoked by the LangGraph tutor node on the backend.
+- **AI Integration**: Provider abstraction for Gemini (`gemini-2.5-flash` free, `gemini-3.7-flash` developer-only) and Ollama/Qwen3 (`qwen3:4b`, developer-only), invoked by the LangGraph tutor node on the backend.
 - **Database & Auth**: Firebase Auth + Cloud Firestore + Firebase Storage.
 - **Audio Engine**: Pure Web Audio API (`AudioContext`, `BiquadFilterNode`, `OscillatorNode`, `ChannelMergerNode`).
 - **Speech Engine**: Browser Native Web Speech API (`webkitSpeechRecognition` & `speechSynthesis`).
@@ -418,7 +420,8 @@ export interface UserStats {
 ### Environment Variables
 - `GEMINI_API_KEY`: Server-side secret for Gemini-backed generation; production requires it.
 - `AI_PROVIDERS`: Comma-separated registered runtimes, normally both locally and `gemini` in Cloud Run.
-- `DEFAULT_AI_PROVIDER`: Runtime used when a chat request does not name one.
+- `DEVELOPER_MODE_PASSWORD`: Server-side secret unlocking the developer-only models. Never reaches the browser. Unset means those models are unreachable.
+- `GEMINI_FREE_MODEL`, `GEMINI_DEVELOPER_MODEL` (legacy alias `GEMINI_MODEL`): Optional overrides for the two Gemini slots; default `gemini-2.5-flash` and `gemini-3.7-flash`. The button label is derived from whichever model is configured, so the selector cannot name a model the server is not calling. The *default selection* is always the free slot and is not configurable.
 - `OLLAMA_BASE_URL`, `OLLAMA_MODEL`: Local Ollama endpoint and model, normally `http://localhost:11434` and `qwen3:4b`.
 - `APP_URL`: Container service URL.
 - `VITE_FIREBASE_*`: Client-side Firebase credentials declared in `.env.example` and `src/utils/firebase.ts`.

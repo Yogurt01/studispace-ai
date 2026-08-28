@@ -32,7 +32,9 @@ jobs:
       VITE_FIREBASE_APP_ID: "1:000000000000:web:ciplaceholder"
       # CI has no Ollama and must not depend on Gemini quota.
       AI_PROVIDERS: gemini
-      DEFAULT_AI_PROVIDER: gemini
+      # Hermetic E2E stubs every model call, so no real developer password is
+      # needed — only a configured one, so the unlock endpoint is reachable.
+      DEVELOPER_MODE_PASSWORD: ci-placeholder-developer-password
       NODE_ENV: development
     steps:
       - uses: actions/checkout@v4

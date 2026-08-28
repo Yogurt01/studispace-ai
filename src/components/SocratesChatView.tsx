@@ -29,6 +29,8 @@ import {
 import { ChatMessage, StudyNote } from "../types";
 import { soundEngine } from "../utils/audioSynthesizer";
 import { useAuth } from "../context/AuthContext";
+import { useDeveloperMode } from "../context/DeveloperModeContext";
+import { DeveloperModeModal } from "./DeveloperModeModal";
 import {
   subscribeToChats,
   saveChatMessage,
@@ -44,12 +46,17 @@ interface SocratesChatViewProps {
 }
 
 type SocratesMode = "socratic" | "eli5" | "exam_grill" | "mnemonic" | "roast_essay";
-type ModelProviderId = "gemini" | "ollama";
+/** Selectable models, at model granularity. Mirrors AI_MODEL_IDS on the server. */
+type AiModelId = "gemini-2.5-flash" | "gemini-3.7-flash" | "qwen3-local";
 
-interface ProviderStatus {
-  id: ModelProviderId;
+interface ModelStatus {
+  id: AiModelId;
   name: string;
+  tier: "free" | "developer";
   available: boolean;
+  /** Server's view of whether this caller may use it. The server also enforces it. */
+  locked: boolean;
+  isDefault?: boolean;
   detail?: string;
   model?: string;
 }
@@ -59,6 +66,7 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
   onAwardXp,
 }) => {
   const { user } = useAuth();
+  const { unlocked: developerUnlocked, authHeaders } = useDeveloperMode();
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "msg-0",
@@ -72,10 +80,12 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
 
   const [input, setInput] = useState("");
   const [selectedMode, setSelectedMode] = useState<SocratesMode>("socratic");
-  // Null until /api/ai/providers answers: the server decides the default, and
-  // hard-coding one here selects a runtime that may not be able to reply.
-  const [selectedProvider, setSelectedProvider] = useState<ModelProviderId | null>(null);
-  const [providers, setProviders] = useState<ProviderStatus[]>([]);
+  // Null until /api/ai/models answers: the server decides the default, and
+  // hard-coding one here selects a model that may not be able to reply.
+  const [selectedModel, setSelectedModel] = useState<AiModelId | null>(null);
+  const [models, setModels] = useState<ModelStatus[]>([]);
+  // The locked model a student just clicked, held while the password prompt is open.
+  const [pendingModel, setPendingModel] = useState<ModelStatus | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [savedId, setSavedId] = useState<string | null>(null);
@@ -138,24 +148,27 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
     };
   }, [user?.uid]);
 
-  // Model provider availability. Polled so the offline badge stays honest when
-  // Ollama is started or stopped while the page is open.
+  // Model availability. Polled so the offline badge stays honest when Ollama is
+  // started or stopped while the page is open, and re-run on unlock so the
+  // padlocks clear the moment Developer Mode is granted.
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
-        const res = await fetch("/api/ai/providers");
+        const res = await fetch("/api/ai/models", { headers: { ...authHeaders() } });
         if (!res.ok) return;
         const data = await res.json();
-        if (cancelled || !Array.isArray(data.providers)) return;
-        setProviders(data.providers);
-        setSelectedProvider((current) => {
-          // Keep the student's choice while it can still answer.
-          if (current && data.providers.find((p: ProviderStatus) => p.id === current)?.available) return current;
-          // Otherwise prefer the server default, then any runtime that is up.
-          const serverDefault = data.providers.find((p: ProviderStatus) => p.id === data.defaultProvider && p.available);
-          const firstAvailable = data.providers.find((p: ProviderStatus) => p.available);
-          return (serverDefault?.id ?? firstAvailable?.id ?? data.defaultProvider ?? current) as ModelProviderId;
+        const list: ModelStatus[] = Array.isArray(data.models) ? data.models : [];
+        if (cancelled || !list.length) return;
+        setModels(list);
+        setSelectedModel((current) => {
+          // Keep the student's choice while it is still usable.
+          const chosen = current ? list.find((m) => m.id === current) : undefined;
+          if (chosen && chosen.available && !chosen.locked) return current;
+          // Otherwise fall back to the server default, then to any unlocked model.
+          const serverDefault = list.find((m) => m.id === data.defaultModel && m.available && !m.locked);
+          const firstUsable = list.find((m) => m.available && !m.locked);
+          return (serverDefault?.id ?? firstUsable?.id ?? data.defaultModel ?? current) as AiModelId;
         });
       } catch {
         // Availability is advisory; a failed probe must not break the chat view.
@@ -164,7 +177,7 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
     load();
     const timer = setInterval(load, 20000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, []);
+  }, [authHeaders, developerUnlocked]);
 
   useEffect(() => {
     scrollToBottom();
@@ -459,9 +472,9 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
     if (!userText.trim() || isLoading) return;
 
     // Refuse locally rather than firing a request that is certain to fail.
-    if (!selectedProvider) return;
-    const activeProvider = providers.find((p) => p.id === selectedProvider);
-    if (activeProvider && !activeProvider.available) {
+    if (!selectedModel) return;
+    const activeModel = models.find((m) => m.id === selectedModel);
+    if (activeModel && (!activeModel.available || activeModel.locked)) {
       soundEngine.playChime("wrong");
       // Session-only notice, never persisted (see the catch block below).
       const offlineNoticeId = `ai-${Date.now()}`;
@@ -470,9 +483,11 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
         id: offlineNoticeId,
         userId: user?.uid || "guest",
         role: "model",
-        text: selectedProvider === "ollama"
-          ? `⚠️ **Qwen3 Local is offline.**\n\nPlease start Ollama and try again.\n\n${activeProvider.detail || ""}`.trim()
-          : `⚠️ **${activeProvider.name} is unavailable.**\n\n${activeProvider.detail || "Pick another model to keep studying."}`,
+        text: activeModel.locked
+          ? `🔒 **${activeModel.name} needs Developer Mode.**\n\nUnlock it from the model selector to use this model.`
+          : selectedModel === "qwen3-local"
+            ? `⚠️ **Qwen3 Local is offline.**\n\nPlease start Ollama and try again.\n\n${activeModel.detail || ""}`.trim()
+            : `⚠️ **${activeModel.name} is unavailable.**\n\n${activeModel.detail || "Pick another model to keep studying."}`,
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         mode: selectedMode,
         createdAt: Date.now(),
@@ -514,12 +529,14 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
         headers: {
           "Content-Type": "application/json",
           ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+          // Proves Developer Mode for a restricted model. The server re-checks it.
+          ...authHeaders(),
         },
         body: JSON.stringify({
           threadId: threadIdRef.current,
           message: userText.trim(),
           mode: selectedMode,
-          provider: selectedProvider,
+          model: selectedModel,
           context: documentContext,
         }),
       });
@@ -790,33 +807,73 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
         </div>
       )}
 
-      {/* Model Provider Switcher */}
+      {/* Model Switcher — one button per selectable model, locks included. */}
       <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
         <span className="font-black text-[10px] uppercase tracking-wider text-gray-700 whitespace-nowrap">Model:</span>
-        {providers.map((p) => (
-          <button
-            key={p.id}
-            id={`btn-model-${p.id}`}
-            onClick={() => {
-              setSelectedProvider(p.id);
-              soundEngine.playChime("click");
-            }}
-            disabled={!p.available}
-            title={p.detail || (p.model ? `${p.name} — ${p.model}` : p.name)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 border-2 border-black font-black text-[11px] uppercase whitespace-nowrap transition-all ${
-              !p.available
-                ? "bg-gray-200 text-gray-500 cursor-not-allowed shadow-none"
-                : selectedProvider === p.id
-                  ? "shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] translate-x-[-1px] translate-y-[-1px]"
-                  : "bg-white hover:bg-gray-100 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
-            }`}
-            style={{ backgroundColor: p.available && selectedProvider === p.id ? "#00F0FF" : undefined }}
-          >
-            <span>{p.id === "ollama" ? "🖥️" : "☁️"}</span>
-            <span>{p.available ? p.name : `${p.name} — Offline`}</span>
-          </button>
-        ))}
+        {models.map((m) => {
+          // A locked model stays clickable: the click is what opens the password
+          // prompt. Only an unlocked-but-unreachable model is truly disabled.
+          const disabled = !m.locked && !m.available;
+          const selected = selectedModel === m.id;
+          return (
+            <button
+              key={m.id}
+              // Dots in an element id break CSS selectors, so the id is
+              // dot-free and the exact model travels in a data attribute.
+              id={`btn-model-${m.id.replace(/\./g, "-")}`}
+              data-model={m.id}
+              onClick={() => {
+                soundEngine.playChime("click");
+                if (m.locked) {
+                  setPendingModel(m);
+                  return;
+                }
+                setSelectedModel(m.id);
+              }}
+              disabled={disabled}
+              aria-pressed={selected}
+              title={
+                m.locked
+                  ? `${m.name} — Developer Mode only`
+                  : m.detail || (m.model ? `${m.name} — ${m.model}` : m.name)
+              }
+              className={`flex items-center gap-1.5 px-3 py-1.5 border-2 border-black font-black text-[11px] uppercase whitespace-nowrap transition-all ${
+                disabled
+                  ? "bg-gray-200 text-gray-500 cursor-not-allowed shadow-none"
+                  : m.locked
+                    ? "bg-gray-100 text-gray-600 hover:bg-gray-200 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+                    : selected
+                      ? "shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] translate-x-[-1px] translate-y-[-1px]"
+                      : "bg-white hover:bg-gray-100 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+              }`}
+              style={{ backgroundColor: !m.locked && m.available && selected ? "#00F0FF" : undefined }}
+            >
+              <span>{m.locked ? "🔒" : m.id === "qwen3-local" ? "🖥️" : "☁️"}</span>
+              <span>{m.name}</span>
+              {m.locked && <span className="text-[9px] tracking-tight">• DEV</span>}
+              {!m.locked && !m.available && <span className="text-[9px] tracking-tight">• Offline</span>}
+            </button>
+          );
+        })}
+        {developerUnlocked && (
+          <span id="badge-developer-mode" className="px-2 py-1 border-2 border-black bg-[#FFE600] font-black text-[9px] uppercase whitespace-nowrap shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
+            Dev Mode
+          </span>
+        )}
       </div>
+
+      <DeveloperModeModal
+        isOpen={pendingModel !== null}
+        modelName={pendingModel?.name}
+        onClose={() => setPendingModel(null)}
+        onUnlocked={() => {
+          // Select what the student was reaching for, and clear the padlocks
+          // optimistically so an in-flight poll cannot bounce the selection back.
+          if (pendingModel) setSelectedModel(pendingModel.id);
+          setModels((prev) => prev.map((m) => ({ ...m, locked: false })));
+          setPendingModel(null);
+        }}
+      />
 
       {/* Mode Selector Tabs */}
       <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
@@ -951,7 +1008,7 @@ export const SocratesChatView: React.FC<SocratesChatViewProps> = ({
               <div className="p-3 bg-[#F4F4F0] border-2 border-black shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] flex items-center gap-2">
                 <div className="w-3 h-3 bg-black animate-ping" />
                 <span className="text-xs font-black uppercase tracking-wider">
-                  Analyzing via {providers.find((p) => p.id === selectedProvider)?.name ?? "Socrates"}...
+                  Analyzing via {models.find((m) => m.id === selectedModel)?.name ?? "Socrates"}...
                 </span>
               </div>
             </div>

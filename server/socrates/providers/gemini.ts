@@ -1,8 +1,15 @@
 import { GoogleGenAI } from "@google/genai";
-import { GenerationRequest, GenerationResult, ModelProvider, ProviderAvailability, ProviderError } from "./types";
+import { AccessTier, AiModelId, GenerationRequest, GenerationResult, ModelProvider, ProviderAvailability, ProviderError } from "./types";
 
 export interface GeminiConfig {
+  /** The selectable model this instance backs, e.g. "gemini-2.5-flash". */
+  id: AiModelId;
+  /** Label the student sees. */
+  name: string;
+  /** Who may use it. The router enforces this; the provider only reports it. */
+  tier: AccessTier;
   apiKey?: string;
+  /** The Gemini model name sent to the API. */
   model: string;
   /** Injectable for tests; defaults to the real clock. */
   now?: () => number;
@@ -18,8 +25,10 @@ export function nextQuotaResetAt(now: number): number {
 }
 
 export class GeminiProvider implements ModelProvider {
-  readonly id = "gemini" as const;
-  readonly name = "Gemini";
+  readonly id: AiModelId;
+  readonly runtime = "gemini" as const;
+  readonly name: string;
+  readonly tier: AccessTier;
   private readonly apiKey?: string;
   private readonly model: string;
   private readonly now: () => number;
@@ -33,6 +42,9 @@ export class GeminiProvider implements ModelProvider {
   private unavailableDetail = "";
 
   constructor(config: GeminiConfig) {
+    this.id = config.id;
+    this.name = config.name;
+    this.tier = config.tier;
     this.apiKey = config.apiKey;
     this.model = config.model;
     this.now = config.now ?? (() => Date.now());
@@ -57,7 +69,7 @@ export class GeminiProvider implements ModelProvider {
 
   async generate({ systemInstruction, messages, context }: GenerationRequest): Promise<GenerationResult> {
     const ai = this.client();
-    if (!ai) throw new ProviderError("gemini", "not_configured", "Gemini is not configured on this server.");
+    if (!ai) throw new ProviderError("gemini", "not_configured", `${this.name} is not configured on this server.`);
     let response: Awaited<ReturnType<GoogleGenAI["models"]["generateContent"]>>;
     try {
       response = await ai.models.generateContent({
@@ -69,17 +81,17 @@ export class GeminiProvider implements ModelProvider {
       const status = err?.status;
       if (status === 429) {
         this.markUnavailable(nextQuotaResetAt(this.now()), "Gemini's daily free-tier quota is used up. It resets at midnight US Pacific time.");
-        throw new ProviderError("gemini", "generation_failed", "Gemini's daily free-tier quota is used up. Try Qwen3 Local, or retry tomorrow.");
+        throw new ProviderError("gemini", "generation_failed", `${this.name}'s daily free-tier quota is used up. It resets at midnight US Pacific time.`);
       }
       if (status === 503) {
         // Transient capacity, not a quota wall: hide it only briefly.
         this.markUnavailable(this.now() + 120000, "Gemini is busy right now.");
-        throw new ProviderError("gemini", "generation_failed", "Gemini is busy right now. Try again shortly, or switch to Qwen3 Local.");
+        throw new ProviderError("gemini", "generation_failed", `${this.name} is busy right now. Try again shortly.`);
       }
-      throw new ProviderError("gemini", "generation_failed", "Gemini could not complete this answer.");
+      throw new ProviderError("gemini", "generation_failed", `${this.name} could not complete this answer.`);
     }
     const text = response.text?.trim();
-    if (!text) throw new ProviderError("gemini", "malformed_response", "Gemini returned an empty answer.");
+    if (!text) throw new ProviderError("gemini", "malformed_response", `${this.name} returned an empty answer.`);
     // A successful call clears any remembered outage.
     this.unavailableUntil = 0;
     const usage: any = (response as any).usageMetadata;

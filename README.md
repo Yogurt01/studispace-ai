@@ -205,14 +205,24 @@ StudiSpace is intentionally designed to feel like a **physical study desk transl
 | **Audio Engine** | Web Audio API | Zero-dependency mathematical synthesis for ambient noise & UI chimes |
 | **Speech Engine** | Web Speech API | Native in-browser voice recognition and speech synthesis |
 | **Backend** | Node.js, Express 4 | API proxying on port 3000 to keep secrets secure |
-| **AI Integration** | Provider abstraction over Gemini (`gemini-3.7-flash`) and Ollama/Qwen3 (`qwen3:4b`) | Server-side LLM inference; the runtime is chosen per turn |
+| **AI Integration** | Provider abstraction over Gemini (`gemini-2.5-flash`, `gemini-3.7-flash`) and Ollama/Qwen3 (`qwen3:4b`) | Server-side LLM inference; the model is chosen per turn |
 | **Database & Auth** | Firebase Authentication, Cloud Firestore | Real-time user stats, notes, tasks, decks, and guest session sync |
 | **Cloud Storage** | Firebase Storage | Document uploads for PDF/image study context |
 
 ### AI terminology
 
 - **Tutoring modes** are the five pedagogical instructions in `server/socrates/prompts.ts`.
-- **Model providers** are Gemini and Ollama/Qwen3, selected by `ProviderRouter` and configured with `AI_PROVIDERS` and `DEFAULT_AI_PROVIDER`.
+- **Models** are the three choices in the Socratic selector, resolved by `ProviderRouter`:
+  | Model | Tier | Runtime |
+  | --- | --- | --- |
+  | Gemini 2.5 Flash | free — the default for every student | Gemini API |
+  | Gemini 3.7 Flash | Developer Mode only | Gemini API |
+  | Qwen3 Local | Developer Mode only | Ollama, on this machine |
+- **Developer Mode** unlocks the two restricted models. The password lives only in
+  `DEVELOPER_MODE_PASSWORD` on the server; the browser exchanges it for a
+  short-lived signed token and the server re-checks that token on every request,
+  so the padlock in the UI is a hint and the backend is the actual gate.
+- **Model runtimes** are Gemini and Ollama/Qwen3, registered according to `AI_PROVIDERS`.
 - **LangGraph agents** are graph nodes. The current graph has one `tutor` agent, reached through `supervisor` and `context_node`; it is not five agents.
 
 ---

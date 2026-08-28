@@ -88,8 +88,8 @@ start, which is why the same image can run locally, in staging and in production
 | `PORT` | `3000` (Cloud Run sets this) |
 | `APP_URL` | The service URL |
 | `AI_PROVIDERS` | `gemini` |
-| `DEFAULT_AI_PROVIDER` | `gemini` |
 | `GEMINI_API_KEY` | From Google Secret Manager (`GEMINI_API_KEY:latest`) |
+| `DEVELOPER_MODE_PASSWORD` | From Google Secret Manager. Unset leaves the developer-only models unreachable, which is the safe default for a public deployment |
 | `VITE_FIREBASE_*` | Browser-safe Firebase config, served by `/runtime-config.js` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Unset on Cloud Run — the runtime service account supplies Application Default Credentials for Firestore |
 
@@ -104,6 +104,8 @@ mounted in production.
 - `.env` (excluded by `.dockerignore`)
 - Firebase service-account JSON — mount it or use the runtime service account
 - `GEMINI_API_KEY` — injected at runtime, never `COPY`ed or baked as a build arg
+- `DEVELOPER_MODE_PASSWORD` — injected at runtime; it is never sent to the
+  browser, never bundled into the client, and never written to `/runtime-config.js`
 
 The Firebase web config is browser-visible by design and is served from
 `/runtime-config.js` at request time, so one image works for every environment
@@ -118,7 +120,7 @@ gcloud builds submit --tag "$IMAGE" --project=<project>
 gcloud run deploy studispace \
   --image="$IMAGE" --project=<project> --region=asia-east1 \
   --platform=managed --allow-unauthenticated --port=3000 \
-  --set-env-vars="NODE_ENV=production,AI_PROVIDERS=gemini,DEFAULT_AI_PROVIDER=gemini" \
+  --set-env-vars="NODE_ENV=production,AI_PROVIDERS=gemini" \
   --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest"
 
 curl -fsS "$(gcloud run services describe studispace --project=<project> \

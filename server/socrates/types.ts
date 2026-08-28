@@ -1,4 +1,4 @@
-import { ModelProviderId } from "./providers/types";
+import { AiModelId } from "./providers/types";
 
 export const SOCRATES_MODES = ["socratic", "eli5", "exam_grill", "mnemonic", "roast_essay"] as const;
 export type SocratesMode = (typeof SOCRATES_MODES)[number];
@@ -22,8 +22,8 @@ export interface ConversationState {
   context?: string;
   systemInstruction?: string;
   reply?: string;
-  /** Which model runtime produced `reply`. Threads may switch providers between turns. */
-  provider?: ModelProviderId;
+  /** Which model produced `reply`. Threads may switch models between turns. */
+  model?: AiModelId;
   updatedAt: number;
 }
 

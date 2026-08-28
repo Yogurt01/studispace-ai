@@ -4,14 +4,16 @@ import { expect, Page, test } from "@playwright/test";
  * Full integration journey. Requires, on this machine:
  *   - a real Firebase account in E2E_EMAIL / E2E_PASSWORD
  *   - Ollama running with the configured model (`ollama serve`, `ollama pull qwen3:4b`)
+ *   - DEVELOPER_MODE_PASSWORD set, since Qwen3 Local is a developer-only model
  *
  * Never run in CI. See docs/LOCAL_DEVELOPMENT.md:
  *   npm run test:e2e:local
  */
 const EMAIL = process.env.E2E_EMAIL;
 const PASSWORD = process.env.E2E_PASSWORD;
+const DEVELOPER_PASSWORD = process.env.DEVELOPER_MODE_PASSWORD;
 
-test.skip(!EMAIL || !PASSWORD, "E2E_EMAIL / E2E_PASSWORD are not set");
+test.skip(!EMAIL || !PASSWORD || !DEVELOPER_PASSWORD, "E2E_EMAIL / E2E_PASSWORD / DEVELOPER_MODE_PASSWORD are not set");
 
 async function signIn(page: Page) {
   await page.goto("/");
@@ -28,6 +30,20 @@ async function signIn(page: Page) {
   await page.locator('input[type="password"]').fill(PASSWORD!);
   await page.locator("#btn-auth-submit").click();
   await expect(page.locator("#nav-tab-socrates_ai")).toBeVisible({ timeout: 45_000 });
+}
+
+/**
+ * Unlocks Developer Mode through the real dialog, which is the only way to reach
+ * Qwen3 Local: it is a developer-tier model and the server enforces that.
+ */
+async function unlockDeveloperMode(page: Page) {
+  if (await page.locator("#badge-developer-mode").isVisible().catch(() => false)) return;
+  await page.locator("#btn-model-qwen3-local").click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.locator("#input-developer-password").fill(DEVELOPER_PASSWORD!);
+  await page.locator("#btn-developer-unlock").click();
+  await expect(page.getByRole("dialog")).toBeHidden({ timeout: 15_000 });
+  await expect(page.locator("#badge-developer-mode")).toBeVisible();
 }
 
 async function openFreshThread(page: Page) {
@@ -53,10 +69,11 @@ async function ask(page: Page, question: string) {
 test("signs in, gets a real Qwen3 answer, follows up in context, and survives a reload", async ({ page }) => {
   await signIn(page);
 
-  // Qwen3 must be detected as available before anything is sent.
-  const localButton = page.locator("#btn-model-ollama");
+  // Qwen3 must be unlocked and detected as available before anything is sent.
+  const localButton = page.locator("#btn-model-qwen3-local");
   await page.locator("#nav-tab-socrates_ai").click();
   await expect(localButton).toBeVisible({ timeout: 30_000 });
+  await unlockDeveloperMode(page);
   await expect(localButton).not.toContainText(/Offline/i);
   await localButton.click();
 
@@ -112,7 +129,8 @@ test("every tutoring mode reaches the model and produces an answer", async ({ pa
   test.setTimeout(900_000);
   await signIn(page);
   await openFreshThread(page);
-  await page.locator("#btn-model-ollama").click();
+  await unlockDeveloperMode(page);
+  await page.locator("#btn-model-qwen3-local").click();
 
   const modes: Array<[RegExp, string]> = [
     [/Socratic Guide/i, "I don't understand binary search."],

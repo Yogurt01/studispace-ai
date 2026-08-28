@@ -86,9 +86,10 @@ Playwright's browser is installed once with `npx playwright install chromium`.
 ## Local model runtime (optional)
 
 StudiSpace can answer with Gemini or with a local Qwen3 model served by Ollama.
-The local runtime needs no API key. See `docs/LOCAL_LLM.md` for installation,
-model selection, and troubleshooting; `.env` keys are `OLLAMA_BASE_URL`,
-`OLLAMA_MODEL`, and `DEFAULT_AI_PROVIDER`.
+The local runtime needs no API key. Qwen3 Local is a Developer Mode model, so
+`DEVELOPER_MODE_PASSWORD` must be set for it to be reachable at all. See
+`docs/LOCAL_LLM.md` for installation, model selection, and troubleshooting;
+`.env` keys are `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, and `DEVELOPER_MODE_PASSWORD`.
 
 ```bash
 ollama serve            # start the runtime

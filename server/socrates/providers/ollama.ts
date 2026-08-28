@@ -1,7 +1,13 @@
 import { ChatMessage } from "../types";
-import { GenerationRequest, GenerationResult, ModelProvider, ProviderAvailability, ProviderError } from "./types";
+import { AccessTier, AiModelId, GenerationRequest, GenerationResult, ModelProvider, ProviderAvailability, ProviderError } from "./types";
 
 export interface OllamaConfig {
+  /** The selectable model this instance backs, e.g. "qwen3-local". */
+  id: AiModelId;
+  /** Label the student sees. */
+  name: string;
+  /** Who may use it. The router enforces this; the provider only reports it. */
+  tier: AccessTier;
   baseUrl: string;
   model: string;
   /** Generation requests are slow on modest hardware; availability probes are not. */
@@ -37,14 +43,19 @@ function toOllamaMessages(systemInstruction: string, messages: ChatMessage[], co
 }
 
 export class OllamaProvider implements ModelProvider {
-  readonly id = "ollama" as const;
-  readonly name = "Qwen3 Local";
+  readonly id: AiModelId;
+  readonly runtime = "ollama" as const;
+  readonly name: string;
+  readonly tier: AccessTier;
   private readonly baseUrl: string;
   private readonly model: string;
   private readonly generateTimeoutMs: number;
   private readonly availabilityTimeoutMs: number;
 
   constructor(config: OllamaConfig, private readonly fetchImpl: typeof fetch = fetch) {
+    this.id = config.id;
+    this.name = config.name;
+    this.tier = config.tier;
     this.baseUrl = config.baseUrl.replace(/\/+$/, "");
     this.model = config.model;
     this.generateTimeoutMs = config.generateTimeoutMs ?? 180000;

@@ -7,7 +7,15 @@ import { resolveConversationUserId } from "./server/socrates/identity";
 import { FirestoreConversationRepository, InMemoryConversationRepository } from "./server/socrates/persistence";
 import { isSocratesMode } from "./server/socrates/prompts";
 import { createProviderRouter } from "./server/socrates/providers";
-import { isModelProviderId, ProviderError } from "./server/socrates/providers/types";
+import { createDeveloperMode } from "./server/socrates/developerMode";
+import {
+  AiModelId,
+  isAiModelId,
+  isModelProviderId,
+  LEGACY_PROVIDER_MODEL,
+  ModelAccessError,
+  ProviderError,
+} from "./server/socrates/providers/types";
 import { SocratesService } from "./server/socrates/service";
 
 dotenv.config();
@@ -57,14 +65,42 @@ async function startServer() {
   catch { conversationRepository = new InMemoryConversationRepository(); console.warn("Firestore credentials unavailable; conversation state is temporary in this local process."); }
   const socratesService = new SocratesService(conversationRepository, providerRouter);
 
-  // Which model runtimes this server can reach. Never exposes keys or URLs.
-  app.get("/api/ai/providers", async (_req, res) => {
+  const developerMode = createDeveloperMode();
+  if (!developerMode.configured) {
+    console.warn("DEVELOPER_MODE_PASSWORD is not set; developer-only models are unreachable on this server.");
+  }
+  /** Developer Mode is proven by a signed token header, never by the request body. */
+  const hasDeveloperAccess = (req: express.Request) => developerMode.verify(req.get("x-developer-token"));
+
+  // Which models this server offers, with availability and lock state. Never
+  // exposes keys, URLs or the developer password.
+  // `/api/ai/providers` predates model-level selection and is kept as an alias.
+  app.get(["/api/ai/models", "/api/ai/providers"], async (req, res) => {
     try {
-      res.json({ providers: await providerRouter.describeAll(), defaultProvider: providerRouter.defaultId });
+      const developer = hasDeveloperAccess(req);
+      const models = await providerRouter.describeAll({ developer });
+      res.json({
+        models,
+        // Legacy key for clients written against the provider-shaped response.
+        providers: models,
+        defaultModel: providerRouter.defaultId,
+        defaultProvider: providerRouter.defaultId,
+        developerMode: { configured: developerMode.configured, unlocked: developer },
+      });
     } catch (err) {
-      console.error("Provider availability error:", err);
-      res.status(500).json({ error: "Could not read model provider availability" });
+      console.error("Model availability error:", err);
+      res.status(500).json({ error: "Could not read model availability" });
     }
+  });
+
+  // Exchanges the Developer Mode password for a short-lived signed token.
+  // The password is compared server-side and never logged, echoed, or returned.
+  app.post("/api/developer/unlock", (req, res) => {
+    const result = developerMode.unlock(req.body?.password);
+    if (result.status === "unlocked") return res.json({ ok: true, token: result.token, expiresAt: result.expiresAt });
+    if (result.status === "unconfigured") return res.status(503).json({ error: "Developer Mode is not configured on this server." });
+    if (result.status === "throttled") return res.status(429).json({ error: "Too many attempts. Wait a minute and try again." });
+    return res.status(401).json({ error: "Incorrect developer password." });
   });
 
   // Socratic chat (LangGraph orchestration + Firestore conversation state).
@@ -72,20 +108,38 @@ async function startServer() {
   // so existing clients keep working; the runtime is chosen by `provider`.
   app.post(["/api/socrates/chat", "/api/gemini/chat"], async (req, res) => {
     try {
-      const { message, mode = "socratic", threadId, context, provider } = req.body;
+      const { message, mode = "socratic", threadId, context, provider, model } = req.body;
       if (typeof message !== "string" || !message.trim()) {
         return res.status(400).json({ error: "Message is required" });
       }
       if (typeof threadId !== "string" || !threadId.trim()) return res.status(400).json({ error: "threadId is required" });
       if (!isSocratesMode(mode)) return res.status(400).json({ error: "Invalid tutoring mode" });
       if (context !== undefined && typeof context !== "string") return res.status(400).json({ error: "Context must be text" });
+      if (model !== undefined && !isAiModelId(model)) return res.status(400).json({ error: "Unknown model" });
       if (provider !== undefined && !isModelProviderId(provider)) return res.status(400).json({ error: "Unknown model provider" });
+      // `model` is authoritative; a legacy `provider` names a runtime, which maps
+      // to the model that runtime serves. Both routes end at the same tier check.
+      const requestedModel: AiModelId | undefined = model ?? (provider ? LEGACY_PROVIDER_MODEL[provider] : undefined);
       // Identity is taken from the verified ID token, never from the request body.
       const userId = await resolveConversationUserId(req.get("authorization"), threadId);
-      res.json(await socratesService.respond({ threadId, userId, message: message.trim(), mode, context, provider }));
+      res.json(
+        await socratesService.respond({
+          threadId,
+          userId,
+          message: message.trim(),
+          mode,
+          context,
+          model: requestedModel,
+          developer: hasDeveloperAccess(req),
+        })
+      );
     } catch (err: any) {
       console.error("Socrates chat error:", err);
       if (err?.message === "CONVERSATION_FORBIDDEN") return res.status(403).json({ error: "Conversation is not available to this user" });
+      // The server, not the UI, is what keeps a locked model locked.
+      if (err instanceof ModelAccessError) {
+        return res.status(403).json({ error: `${err.message} Unlock Developer Mode to use it.`, model: err.modelId, code: "developer_mode_required" });
+      }
       if (err?.code === "auth/argument-error" || err?.code?.startsWith?.("auth/")) return res.status(401).json({ error: "Invalid or expired sign-in token" });
       // Provider errors carry a message written for students; stack traces stay in the server log.
       if (err instanceof ProviderError) {

@@ -125,15 +125,19 @@ these are secrets; Ollama is local and has no API key.
 ```env
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=qwen3:4b
-DEFAULT_AI_PROVIDER=gemini
 GEMINI_MODEL=gemini-3.7-flash
 ```
 
 `AI_PROVIDERS` controls which runtimes are registered. Leave it empty locally to
-offer both providers, or set `AI_PROVIDERS=ollama` for an Ollama-only server.
-`DEFAULT_AI_PROVIDER` decides which runtime answers a chat request that names
-none. Set it to `ollama` to make the local model the default. These variables
-affect Socratic chat; the flashcard, quiz, and note-generation endpoints remain
+enable both, or set `AI_PROVIDERS=ollama` for an Ollama-only server. A model
+whose runtime is disabled still appears in the selector, greyed out with the
+reason, so the list of choices does not change shape between machines.
+
+The default model is always Gemini 2.5 Flash and is not configurable: it is what
+an ordinary student must land on. Qwen3 Local is a **Developer Mode** model, so
+reaching it also needs `DEVELOPER_MODE_PASSWORD` set on the server — without it
+the option stays locked no matter what Ollama is doing. These variables affect
+Socratic chat; the flashcard, quiz, and note-generation endpoints remain
 Gemini-backed.
 
 ## Run StudiSpace and pick Qwen3

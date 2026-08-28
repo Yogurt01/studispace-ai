@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { OllamaProvider, stripThinking } from "./ollama";
+import { OllamaConfig, OllamaProvider, stripThinking } from "./ollama";
 import { ChatMessage } from "../types";
 import { ProviderError } from "./types";
 
-const config = { baseUrl: "http://localhost:11434", model: "qwen3:4b", generateTimeoutMs: 5000, availabilityTimeoutMs: 500 };
+const config: OllamaConfig = { id: "qwen3-local", name: "Qwen3 Local", tier: "developer", baseUrl: "http://localhost:11434", model: "qwen3:4b", generateTimeoutMs: 5000, availabilityTimeoutMs: 500 };
 
 const messages: ChatMessage[] = [
   { id: "1", userId: "u", role: "user", text: "What is supervised learning?", timestamp: "", createdAt: 1 },
@@ -27,8 +27,11 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 test("initializes from configuration and trims a trailing slash off the base URL", async () => {
   const { impl, calls } = stubFetch(() => json({ models: [{ name: "qwen3:4b" }] }));
   const provider = new OllamaProvider({ ...config, baseUrl: "http://localhost:11434/" }, impl);
-  assert.equal(provider.id, "ollama");
+  // The id is the selectable model; the runtime it speaks to is separate.
+  assert.equal(provider.id, "qwen3-local");
+  assert.equal(provider.runtime, "ollama");
   assert.equal(provider.name, "Qwen3 Local");
+  assert.equal(provider.tier, "developer");
   await provider.checkAvailability();
   assert.equal(calls[0].url, "http://localhost:11434/api/tags");
 });

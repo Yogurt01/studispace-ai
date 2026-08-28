@@ -8,10 +8,12 @@ import { SocratesService } from "./service";
 import { SOCRATES_MODES } from "./types";
 
 /** A router with both runtimes stubbed, so routing is exercised without any network. */
-function makeRouter(overrides: { gemini?: StubProvider; ollama?: StubProvider; defaultId?: "gemini" | "ollama" } = {}) {
-  const gemini = overrides.gemini ?? new StubProvider("gemini", "Gemini");
-  const ollama = overrides.ollama ?? new StubProvider("ollama", "Qwen3 Local");
-  return { gemini, ollama, router: new ProviderRouter([gemini, ollama], overrides.defaultId ?? "gemini") };
+function makeRouter(overrides: { gemini?: StubProvider; ollama?: StubProvider } = {}) {
+  const gemini = overrides.gemini ?? new StubProvider("gemini-2.5-flash", "Gemini 2.5 Flash");
+  // Qwen3 is developer-tier in production; the stub mirrors that so these tests
+  // exercise the same gate the real registry applies.
+  const ollama = overrides.ollama ?? new StubProvider("qwen3-local", "Qwen3 Local", { tier: "developer" });
+  return { gemini, ollama, router: new ProviderRouter([gemini, ollama], "gemini-2.5-flash") };
 }
 
 test("persists a new conversation and supplies it on its second turn", async () => {
@@ -46,8 +48,8 @@ test("prevents one user from reading another user's thread", async () => {
 
 test("propagates provider errors without persisting a partial model response", async () => {
   const repo = new InMemoryConversationRepository();
-  const failing = new StubProvider("gemini", "Gemini", { fail: () => { throw new Error("provider down"); } });
-  const service = new SocratesService(repo, new ProviderRouter([failing], "gemini"));
+  const failing = new StubProvider("gemini-2.5-flash", "Gemini 2.5 Flash", { fail: () => { throw new Error("provider down"); } });
+  const service = new SocratesService(repo, new ProviderRouter([failing], "gemini-2.5-flash"));
   await assert.rejects(() => service.respond({ threadId: "failure", userId: "user", message: "hello", mode: "socratic" }), /provider down/);
   assert.equal(await repo.load("failure", "user"), null);
 });
@@ -67,7 +69,7 @@ test("every tutoring mode reaches the Ollama provider too", async () => {
   const { ollama, router } = makeRouter();
   const service = new SocratesService(new InMemoryConversationRepository(), router);
   for (const mode of SOCRATES_MODES) {
-    await service.respond({ threadId: `ollama-${mode}`, userId: "user-a", message: "Explain", mode, provider: "ollama" });
+    await service.respond({ threadId: `ollama-${mode}`, userId: "user-a", message: "Explain", mode, model: "qwen3-local", developer: true });
     assert.equal(ollama.lastCall?.systemInstruction, getSystemInstruction(mode));
   }
   assert.equal(new Set(ollama.calls.map((c) => c.systemInstruction)).size, SOCRATES_MODES.length);
@@ -100,38 +102,58 @@ test("switching model mid-thread keeps the conversation history intact", async (
   const { gemini, ollama, router } = makeRouter();
   const service = new SocratesService(repo, router);
 
-  const first = await service.respond({ threadId: "switch", userId: "owner", message: "What is supervised learning?", mode: "socratic", provider: "gemini" });
-  assert.equal(first.provider, "gemini");
+  const first = await service.respond({ threadId: "switch", userId: "owner", message: "What is supervised learning?", mode: "socratic", model: "gemini-2.5-flash" });
+  assert.equal(first.model, "gemini-2.5-flash");
 
   // Same threadId, different runtime: the local model must see the Gemini turns.
-  const second = await service.respond({ threadId: "switch", userId: "owner", message: "Another example?", mode: "socratic", provider: "ollama" });
-  assert.equal(second.provider, "ollama");
+  const second = await service.respond({ threadId: "switch", userId: "owner", message: "Another example?", mode: "socratic", model: "qwen3-local", developer: true });
+  assert.equal(second.model, "qwen3-local");
   assert.equal(ollama.lastCall?.messages.length, 3);
   assert.equal(ollama.lastCall?.messages[0].text, "What is supervised learning?");
-  assert.equal(ollama.lastCall?.messages[1].text, gemini.calls[0] && `gemini:What is supervised learning?`);
+  assert.equal(ollama.lastCall?.messages[1].text, gemini.calls[0] && `gemini-2.5-flash:What is supervised learning?`);
 
   // ...and switching back preserves both models' turns in one thread.
-  const third = await service.respond({ threadId: "switch", userId: "owner", message: "And once more?", mode: "socratic", provider: "gemini" });
-  assert.equal(third.provider, "gemini");
+  const third = await service.respond({ threadId: "switch", userId: "owner", message: "And once more?", mode: "socratic", model: "gemini-2.5-flash" });
+  assert.equal(third.model, "gemini-2.5-flash");
   assert.equal(gemini.lastCall?.messages.length, 5);
 
   const state = await repo.load("switch", "owner");
   assert.equal(state?.messages.length, 6);
-  assert.equal(state?.provider, "gemini");
+  assert.equal(state?.model, "gemini-2.5-flash");
 });
 
 test("the provider recorded on the thread follows the turn that produced the reply", async () => {
   const repo = new InMemoryConversationRepository();
   const { router } = makeRouter();
   const service = new SocratesService(repo, router);
-  await service.respond({ threadId: "record", userId: "owner", message: "hi", mode: "socratic", provider: "ollama" });
-  assert.equal((await repo.load("record", "owner"))?.provider, "ollama");
+  await service.respond({ threadId: "record", userId: "owner", message: "hi", mode: "socratic", model: "qwen3-local", developer: true });
+  assert.equal((await repo.load("record", "owner"))?.model, "qwen3-local");
 });
 
-test("omitting the provider uses the configured default", async () => {
-  const { ollama, router } = makeRouter({ defaultId: "ollama" });
+test("omitting the model uses the free default, not a locked one", async () => {
+  const { gemini, ollama, router } = makeRouter();
   const service = new SocratesService(new InMemoryConversationRepository(), router);
   const result = await service.respond({ threadId: "default", userId: "owner", message: "hi", mode: "socratic" });
-  assert.equal(result.provider, "ollama");
+  assert.equal(result.model, "gemini-2.5-flash");
+  assert.equal(gemini.calls.length, 1);
+  assert.equal(ollama.calls.length, 0);
+});
+
+test("a developer-only model is refused unless developer access is proven", async () => {
+  const repo = new InMemoryConversationRepository();
+  const { ollama, router } = makeRouter();
+  const service = new SocratesService(repo, router);
+
+  // The claim has to be proven by the caller; the request itself cannot assert it.
+  await assert.rejects(
+    () => service.respond({ threadId: "locked", userId: "owner", message: "hi", mode: "socratic", model: "qwen3-local" }),
+    (err: any) => err.name === "ModelAccessError" && err.modelId === "qwen3-local"
+  );
+  // Refused before any generation happens, and nothing is written to the thread.
+  assert.equal(ollama.calls.length, 0);
+  assert.equal(await repo.load("locked", "owner"), null);
+
+  const allowed = await service.respond({ threadId: "locked", userId: "owner", message: "hi", mode: "socratic", model: "qwen3-local", developer: true });
+  assert.equal(allowed.model, "qwen3-local");
   assert.equal(ollama.calls.length, 1);
 });
