@@ -1,4 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
+import dotenv from "dotenv";
+
+// The server resolves its port from .env through dotenv; this config must read
+// the same file, or the two disagree about where the app is. That divergence is
+// invisible on a machine that has a .env and only shows up in CI, which has none.
+dotenv.config();
 
 /**
  * Two deliberately separate suites:
@@ -8,7 +14,10 @@ import { defineConfig, devices } from "@playwright/test";
  * - `local`   — full integration against a real Firebase account and a running
  *               Ollama/Qwen3. Never run in CI; see docs/LOCAL_DEVELOPMENT.md.
  */
-const PORT = Number(process.env.E2E_PORT || 3000);
+// Same resolution order as server.ts, so the harness follows the app rather than
+// asserting a port of its own. 8080 is the container default (Cloud Run's), and a
+// local .env with PORT=3000 moves both together.
+const PORT = Number(process.env.E2E_PORT || process.env.PORT || 8080);
 const baseURL = process.env.E2E_BASE_URL || `http://localhost:${PORT}`;
 
 export default defineConfig({
