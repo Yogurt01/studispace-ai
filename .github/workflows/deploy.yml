@@ -47,6 +47,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Keyless auth needs both inputs, and an unset secret expands to an empty
+      # string rather than failing. The auth action then reports only "must
+      # specify exactly one of 'workload_identity_provider' or
+      # 'credentials_json'", which never mentions that the secret is simply not
+      # configured. Fail here instead, naming what to set and where.
+      - name: Check deployment credentials are configured
+        env:
+          WIF_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          DEPLOY_SA: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+        run: |
+          missing=""
+          [ -n "$WIF_PROVIDER" ] || missing="$missing GCP_WORKLOAD_IDENTITY_PROVIDER"
+          [ -n "$DEPLOY_SA" ]    || missing="$missing GCP_SERVICE_ACCOUNT"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository or environment secret(s):$missing"
+            echo "Keyless Workload Identity Federation is not configured for this repository."
+            echo "See 'Bootstrap Workload Identity Federation' in docs/DEPLOYMENT.md for the"
+            echo "gcloud commands that create the pool, provider and deploy service account,"
+            echo "and for the exact values to store as secrets."
+            exit 1
+          fi
+          echo "Deployment credentials are configured."
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:

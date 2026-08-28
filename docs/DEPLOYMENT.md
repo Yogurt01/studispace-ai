@@ -108,9 +108,81 @@ model names, not secrets, and have working defaults.
 ### Workload Identity Federation (keyless)
 
 Preferred over a downloaded service-account key, which should never be stored in
-GitHub. Create the pool/provider once, then grant the deploy service account
-`roles/run.admin`, `roles/artifactregistry.writer`, `roles/iam.serviceAccountUser`
-and `roles/secretmanager.secretAccessor`.
+GitHub. GitHub mints a short-lived OIDC token, Google exchanges it for a
+short-lived access token, and no long-lived credential exists anywhere.
+
+Two identities are involved and must not be confused:
+
+| Identity | Who it is | What it does |
+| --- | --- | --- |
+| **Deploy** service account | GitHub Actions impersonates it through WIF | Pushes the image, deploys the revision, shifts traffic |
+| **Runtime** service account | The one the Cloud Run service runs *as* | Reads `GEMINI_API_KEY` and `DEVELOPER_MODE_PASSWORD`, talks to Firestore |
+
+Granting the deploy identity the runtime's Secret Manager access, or deploying
+as the default compute account, blurs the two. Keep them apart.
+
+#### Bootstrap Workload Identity Federation
+
+Run once, as a project admin. Substitute nothing except where marked.
+
+```bash
+PROJECT=n8n-hragent
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
+REPO=Yogurt01/studispace-ai          # the only repository allowed to deploy
+RUNTIME_SA=661978143452-compute@developer.gserviceaccount.com
+
+gcloud services enable iamcredentials.googleapis.com sts.googleapis.com --project="$PROJECT"
+
+# 1. A dedicated deploy identity — never the runtime account.
+gcloud iam service-accounts create github-deployer \
+  --project="$PROJECT" --display-name="GitHub Actions deployer"
+DEPLOY_SA="github-deployer@${PROJECT}.iam.gserviceaccount.com"
+
+# 2. Least privilege: push images, manage the Cloud Run service, and act as the
+#    runtime account (required to deploy a service that runs as it). No Editor,
+#    no Owner, and no Secret Manager access — the runtime account holds that.
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:${DEPLOY_SA}" --role="roles/artifactregistry.writer"
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:${DEPLOY_SA}" --role="roles/run.admin"
+gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" \
+  --project="$PROJECT" \
+  --member="serviceAccount:${DEPLOY_SA}" --role="roles/iam.serviceAccountUser"
+
+# 3. The pool and the GitHub OIDC provider. The attribute condition is the
+#    security boundary: without it, any GitHub repository anywhere could
+#    exchange a token for this service account.
+gcloud iam workload-identity-pools create github \
+  --project="$PROJECT" --location=global --display-name="GitHub Actions"
+
+gcloud iam workload-identity-pools providers create-oidc github-actions \
+  --project="$PROJECT" --location=global --workload-identity-pool=github \
+  --display-name="GitHub Actions OIDC" \
+  --issuer-uri="https://token.actions.githubusercontent.com" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner" \
+  --attribute-condition="assertion.repository == '${REPO}'"
+
+# 4. Let only that repository impersonate the deploy account.
+gcloud iam service-accounts add-iam-policy-binding "$DEPLOY_SA" \
+  --project="$PROJECT" --role="roles/iam.workloadIdentityUser" \
+  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github/attribute.repository/${REPO}"
+
+# 5. The two values the workflow needs.
+echo "GCP_WORKLOAD_IDENTITY_PROVIDER = projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github/providers/github-actions"
+echo "GCP_SERVICE_ACCOUNT            = ${DEPLOY_SA}"
+```
+
+Store those two values as repository secrets, along with the rest of the table
+above. The deploy job runs in the `production` environment, so environment-scoped
+secrets work equally well — but a secret set at neither scope expands to an empty
+string, and `google-github-actions/auth` then fails with "must specify exactly
+one of 'workload_identity_provider' or 'credentials_json'". The workflow checks
+for that before authenticating and names the missing secret instead.
+
+To tighten further, replace `roles/run.admin` at project scope with a binding on
+the single service once it exists, and set `--service-account` on the deploy so
+the revision runs as a dedicated runtime account rather than the default compute
+one.
 
 ## Runtime configuration
 
