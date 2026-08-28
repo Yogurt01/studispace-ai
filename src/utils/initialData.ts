@@ -8,6 +8,13 @@ import {
   CourseGrade,
 } from "../types";
 
+/**
+ * Guest Scholar is a local-only exploration mode: there is no Firebase Auth user
+ * behind it, so every Firestore rule that requires request.auth != null rejects
+ * it. Guests run entirely on the seeded INITIAL_* data below.
+ */
+export const GUEST_USER_ID = "guest-scholar";
+
 export const INITIAL_STATS: UserStats = {
   xp: 1420,
   level: 4,

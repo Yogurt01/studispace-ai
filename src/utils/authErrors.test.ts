@@ -21,3 +21,23 @@ test("unmapped codes fall back to the provider message, then to a generic one", 
   assert.equal(describeAuthError(null), "Authentication error occurred.");
   assert.equal(describeAuthError({}), "Authentication error occurred.");
 });
+
+test("unauthorized-domain explains the hostname rule instead of leaking the raw error", () => {
+  const message = describeAuthError({
+    code: "auth/unauthorized-domain",
+    message: "Firebase: Error (auth/unauthorized-domain).",
+  });
+  assert.doesNotMatch(message, /Firebase: Error/);
+  assert.match(message, /localhost:3000/);
+  assert.match(message, /Authorized domains/i);
+});
+
+test("a blocked popup tells the student what to change", () => {
+  const message = describeAuthError({ code: "auth/popup-blocked" });
+  assert.match(message, /popup/i);
+  assert.doesNotMatch(message, /Firebase: Error/);
+});
+
+test("a disabled provider is reported as a project configuration problem", () => {
+  assert.match(describeAuthError({ code: "auth/operation-not-allowed" }), /disabled for this project/i);
+});

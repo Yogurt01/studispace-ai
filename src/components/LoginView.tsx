@@ -36,6 +36,8 @@ export const LoginView: React.FC = () => {
     signInWithEmail,
     signUpWithEmail,
     guestSignIn,
+    authError,
+    configError,
   } = useAuth();
 
   const [mode, setMode] = useState<"signin" | "signup">("signin");
@@ -50,6 +52,11 @@ export const LoginView: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // A misconfigured .env blocks every sign-in method, so it outranks anything
+  // this form produced. A redirect sign-in failure arrives on a fresh page load,
+  // after local state has been reset, so it needs to come from the context too.
+  const visibleError = configError || errorMessage || authError;
 
   // Pop quiz demo interaction on left side
   const [quizAnswer, setQuizAnswer] = useState<string | null>("Energy Production");
@@ -375,10 +382,13 @@ export const LoginView: React.FC = () => {
               </div>
 
               {/* Error Callout */}
-              {errorMessage && (
-                <div className="p-3 bg-[#FFDAD6] border-2 border-black shadow-[3px_3px_0px_#000] text-black font-bold text-xs flex items-start gap-2">
+              {visibleError && (
+                <div
+                  role="alert"
+                  className="p-3 bg-[#FFDAD6] border-2 border-black shadow-[3px_3px_0px_#000] text-black font-bold text-xs flex items-start gap-2"
+                >
                   <span className="text-red-700 font-black">⚠️</span>
-                  <span>{errorMessage}</span>
+                  <span>{visibleError}</span>
                 </div>
               )}
 

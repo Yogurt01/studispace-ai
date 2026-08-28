@@ -496,7 +496,13 @@ Make all 4 options believable and plausible (no joke options). Provide a solid c
   }
 
   const server = app.listen(port, "0.0.0.0", () => {
-    console.log(`⚡ StudiSpace server running on http://0.0.0.0:${port}`);
+    // Bind on every interface, but always advertise a hostname that Firebase Auth
+    // accepts. Google sign-in fails with auth/unauthorized-domain on any host that
+    // is not in the project's Authorized Domains list, and printing 0.0.0.0 (or a
+    // LAN IP) is what leads people to open the app on one of those hosts.
+    console.log(`⚡ StudiSpace server running on http://localhost:${port}`);
+    console.log(`   Open the app on localhost or 127.0.0.1 — other hostnames are not`);
+    console.log(`   authorized for Firebase Google sign-in.`);
   });
   const shutdown = () => server.close(() => process.exit(0));
   process.once("SIGTERM", shutdown);

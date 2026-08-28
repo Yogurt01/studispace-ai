@@ -21,6 +21,7 @@ import {
   CourseGrade,
 } from "../types";
 import {
+  GUEST_USER_ID,
   INITIAL_ASSIGNMENTS,
   INITIAL_DECKS,
   INITIAL_NOTES,
@@ -98,7 +99,8 @@ export function subscribeToDocuments(
   // single userId: security rules reject any query that could match another
   // student's documents. Ordering is applied client-side because an equality
   // filter combined with orderBy would require a deployed composite index.
-  if (!userId) {
+  // Guest Scholars have no Firebase Auth user, so they are treated as signed out.
+  if (!userId || userId === GUEST_USER_ID) {
     callback([]);
     return () => {};
   }
@@ -136,7 +138,8 @@ export function subscribeToChats(
   // userId: security rules reject any query that could match another student's
   // messages. Ordering is applied client-side because an equality filter
   // combined with orderBy would require a deployed composite index.
-  if (!userId) {
+  // Guest Scholars have no Firebase Auth user, so they are treated as signed out.
+  if (!userId || userId === GUEST_USER_ID) {
     callback([]);
     return () => {};
   }
@@ -202,6 +205,13 @@ export function subscribeToQuizzes(
   userId: string | null,
   callback: (quizzes: Quiz[]) => void
 ) {
+  // Security rules require an authenticated caller. Subscribing while signed out
+  // (or as a Guest Scholar, who has no Firebase Auth user) guarantees a
+  // permission-denied snapshot error, so stay off the wire instead.
+  if (!userId || userId === GUEST_USER_ID) {
+    return () => {};
+  }
+
   try {
     const quizzesRef = collection(db, "quizzes");
     return onSnapshot(
@@ -273,6 +283,13 @@ export function subscribeToNotes(
   userId: string | null,
   callback: (notes: StudyNote[]) => void
 ) {
+  // Security rules require an authenticated caller. Subscribing while signed out
+  // (or as a Guest Scholar, who has no Firebase Auth user) guarantees a
+  // permission-denied snapshot error, so stay off the wire instead.
+  if (!userId || userId === GUEST_USER_ID) {
+    return () => {};
+  }
+
   try {
     const notesRef = collection(db, "notes");
     return onSnapshot(
@@ -344,6 +361,13 @@ export function subscribeToAssignments(
   userId: string | null,
   callback: (assignments: Assignment[]) => void
 ) {
+  // Security rules require an authenticated caller. Subscribing while signed out
+  // (or as a Guest Scholar, who has no Firebase Auth user) guarantees a
+  // permission-denied snapshot error, so stay off the wire instead.
+  if (!userId || userId === GUEST_USER_ID) {
+    return () => {};
+  }
+
   try {
     const assignmentsRef = collection(db, "assignments");
     return onSnapshot(
@@ -405,6 +429,13 @@ export function subscribeToDecks(
   userId: string | null,
   callback: (decks: FlashcardDeck[]) => void
 ) {
+  // Security rules require an authenticated caller. Subscribing while signed out
+  // (or as a Guest Scholar, who has no Firebase Auth user) guarantees a
+  // permission-denied snapshot error, so stay off the wire instead.
+  if (!userId || userId === GUEST_USER_ID) {
+    return () => {};
+  }
+
   try {
     const decksRef = collection(db, "decks");
     return onSnapshot(
@@ -457,6 +488,13 @@ export function subscribeToCourses(
   userId: string | null,
   callback: (courses: CourseGrade[]) => void
 ) {
+  // Security rules require an authenticated caller. Subscribing while signed out
+  // (or as a Guest Scholar, who has no Firebase Auth user) guarantees a
+  // permission-denied snapshot error, so stay off the wire instead.
+  if (!userId || userId === GUEST_USER_ID) {
+    return () => {};
+  }
+
   try {
     const coursesRef = collection(db, "courses");
     return onSnapshot(

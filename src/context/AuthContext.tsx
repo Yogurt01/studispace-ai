@@ -2,6 +2,8 @@ import React, { createContext, useContext, useState, useEffect, useRef } from "r
 import {
   User,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   updateProfile,
@@ -15,9 +17,10 @@ import {
   updateDoc,
   onSnapshot,
 } from "firebase/firestore";
-import { auth, db, googleProvider } from "../utils/firebase";
+import { auth, db, googleProvider, firebaseConfigError } from "../utils/firebase";
+import { describeAuthError } from "../utils/authErrors";
 import { UserStats } from "../types";
-import { INITIAL_STATS } from "../utils/initialData";
+import { GUEST_USER_ID, INITIAL_STATS } from "../utils/initialData";
 
 export interface UserProfile {
   userId: string;
@@ -35,6 +38,11 @@ interface AuthContextType {
   user: User | null;
   userProfile: UserProfile | null;
   loading: boolean;
+  /** Set when a redirect-based Google sign-in came back with an error. */
+  authError: string | null;
+  /** Set when VITE_FIREBASE_* config is incomplete; sign-in cannot work until fixed. */
+  configError: string | null;
+  clearAuthError: () => void;
   signInWithGoogle: () => Promise<void>;
   signInWithEmail: (email: string, pass: string) => Promise<void>;
   signUpWithEmail: (
@@ -51,12 +59,24 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// Popups are the better experience (the app keeps its state), but browsers and
+// embedded webviews block them often enough that a popup-only implementation
+// leaves Google sign-in permanently dead for those students. These codes mean
+// "no popup available", so we retry via the redirect flow instead;
+// getRedirectResult() picks the answer up when the browser navigates back.
+const POPUP_FALLBACK_CODES = new Set([
+  "auth/popup-blocked",
+  "auth/operation-not-supported-in-this-environment",
+  "auth/web-storage-unsupported",
+]);
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
   const [user, setUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [redirectError, setRedirectError] = useState<string | null>(null);
 
   // Sign-up writes the profile the student actually filled in. Creating an
   // account fires onAuthStateChanged immediately, so without this flag both
@@ -64,10 +84,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   // silently discarding the chosen name, major and term.
   const signUpInFlight = useRef(false);
 
+  // A redirect sign-in finishes on a fresh page load, so its failure cannot be
+  // thrown back to whoever called signInWithGoogle. Surface it here instead.
+  useEffect(() => {
+    getRedirectResult(auth).catch((err) => {
+      console.error("Google Redirect Sign In Error:", err);
+      setRedirectError(describeAuthError(err));
+    });
+  }, []);
+
   useEffect(() => {
     let unsubscribeDoc: (() => void) | undefined;
 
     const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
+      // Detach the previous account's profile listener before doing anything
+      // else. It was opened under the old uid, so once that user signs out (or
+      // is replaced by another) the rules correctly reject it and it spews
+      // permission-denied for as long as it stays attached.
+      if (unsubscribeDoc) {
+        unsubscribeDoc();
+        unsubscribeDoc = undefined;
+      }
+
       setUser(currentUser);
 
       if (currentUser) {
@@ -132,6 +170,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (err: any) {
+      if (POPUP_FALLBACK_CODES.has(err?.code)) {
+        console.warn(`Google popup unavailable (${err.code}); falling back to redirect sign-in.`);
+        await signInWithRedirect(auth, googleProvider);
+        return;
+      }
       console.error("Google Sign In Error:", err);
       throw err;
     }
@@ -193,7 +236,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const guestSignIn = () => {
     // Allows immediate exploration mode
     setUser({
-      uid: "guest-scholar",
+      uid: GUEST_USER_ID,
       displayName: "Guest Scholar",
       email: "guest@studispace.os",
       photoURL: "",
@@ -213,7 +256,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     } as unknown as User);
 
     setUserProfile({
-      userId: "guest-scholar",
+      userId: GUEST_USER_ID,
       displayName: "Guest Scholar",
       email: "guest@studispace.os",
       photoURL: "",
@@ -225,7 +268,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const logout = async () => {
     try {
-      if (user?.uid === "guest-scholar") {
+      if (user?.uid === GUEST_USER_ID) {
         setUser(null);
         setUserProfile(null);
         return;
@@ -240,7 +283,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const updateUserStats = async (newStats: Partial<UserStats>) => {
-    if (!user || user.uid === "guest-scholar") return;
+    if (!user || user.uid === GUEST_USER_ID) return;
     try {
       const userDocRef = doc(db, "users", user.uid);
       const currentStats = userProfile?.stats || INITIAL_STATS;
@@ -263,6 +306,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         user,
         userProfile,
         loading,
+        authError: redirectError,
+        configError: firebaseConfigError,
+        clearAuthError: () => setRedirectError(null),
         signInWithGoogle,
         signInWithEmail,
         signUpWithEmail,

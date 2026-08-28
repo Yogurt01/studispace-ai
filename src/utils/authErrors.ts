@@ -12,6 +12,19 @@ const AUTH_ERROR_MESSAGES: Record<string, string> = {
   "auth/too-many-requests": "Too many attempts. Wait a moment before trying again.",
   "auth/network-request-failed": "Network unavailable. Check your connection and try again.",
   "auth/popup-closed-by-user": "Sign-in popup closed before completing. Try again.",
+  "auth/cancelled-popup-request": "Another sign-in is already in progress.",
+  "auth/popup-blocked": "Your browser blocked the sign-in popup. Allow popups for this site, then try again.",
+  // Firebase compares window.location.hostname against the project's Authorized
+  // Domains. The port is irrelevant, the hostname is not: opening the dev server
+  // on a LAN IP or a tunnel host trips this even though localhost works.
+  "auth/unauthorized-domain":
+    "This address isn't authorized for sign-in. Open the app at http://localhost:3000, or add this domain under Firebase Console → Authentication → Settings → Authorized domains.",
+  "auth/operation-not-allowed": "That sign-in method is disabled for this project. Enable it in the Firebase Console.",
+  "auth/user-disabled": "This account has been disabled. Contact support.",
+  "auth/missing-password": "Please enter your password.",
+  "auth/invalid-api-key": "The Firebase API key is invalid. Check VITE_FIREBASE_API_KEY.",
+  "auth/account-exists-with-different-credential":
+    "This email is already registered with a different sign-in method. Try that method instead.",
 };
 
 export function describeAuthError(err: { code?: string; message?: string } | null | undefined): string {
