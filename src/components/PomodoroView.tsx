@@ -77,6 +77,17 @@ export const PomodoroView: React.FC<PomodoroViewProps> = ({
 
   const timerRef = useRef<number | null>(null);
 
+  // Component unmount / navigation teardown safeguard: stop audio synthesizer
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      soundEngine.stopAllAmbient(true);
+    };
+  }, []);
+
   // Handle Preset Switching
   const handleSelectPreset = (preset: PomodoroPreset) => {
     setSelectedPreset(preset);
@@ -154,12 +165,37 @@ export const PomodoroView: React.FC<PomodoroViewProps> = ({
     }
   };
 
+  // End Session Handler: Clears timer, stops all ambient audio, resets states
+  const handleEndSession = () => {
+    soundEngine.playChime("click");
+    // 1. Terminate running timer interval
+    setIsRunning(false);
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
+    // 2. Stop audio engine & ambient synthesis immediately
+    soundEngine.stopAllAmbient(true);
+    setActiveAmbient(null);
+
+    // 3. Reset session states
+    setCurrentSprintIndex(1);
+    setCompletedSprintsCount(0);
+    setMode("work");
+    setTimeLeft(workDuration * 60);
+    setIsSessionActive(false);
+  };
+
   const handleTimerComplete = () => {
     setIsRunning(false);
 
     if (mode === "work") {
       // Completed a sprint
       soundEngine.playChime("success");
+      // Stop focus soundscape during breaks
+      soundEngine.stopAllAmbient(true);
+
       const nextCompleted = completedSprintsCount + 1;
       setCompletedSprintsCount(nextCompleted);
       onCompleteSession(workDuration);
@@ -177,6 +213,8 @@ export const PomodoroView: React.FC<PomodoroViewProps> = ({
       // Check if full session is finished
       if (nextCompleted >= totalSprints) {
         soundEngine.playChime("levelup");
+        soundEngine.stopAllAmbient(true);
+        setActiveAmbient(null);
         setShowSessionCompleteModal(true);
         setIsSessionActive(false);
         return;
@@ -193,17 +231,36 @@ export const PomodoroView: React.FC<PomodoroViewProps> = ({
       soundEngine.playChime("bell");
       setCurrentSprintIndex((prev) => prev + 1);
       setMode("work");
+      if (activeAmbient) {
+        soundEngine.setAmbient(activeAmbient, true, ambientVolume);
+      }
     }
   };
 
   const toggleTimer = () => {
     soundEngine.playChime("click");
-    setIsRunning((prev) => !prev);
+    setIsRunning((prev) => {
+      const next = !prev;
+      if (next) {
+        if (mode === "work" && activeAmbient) {
+          soundEngine.setAmbient(activeAmbient, true, ambientVolume);
+        }
+      } else {
+        soundEngine.stopAllAmbient();
+      }
+      return next;
+    });
   };
 
   const resetCurrentTimer = () => {
     soundEngine.playChime("click");
     setIsRunning(false);
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    soundEngine.stopAllAmbient(true);
+
     let dur = workDuration;
     if (mode === "short_break") dur = shortBreakDuration;
     if (mode === "long_break") dur = longBreakDuration;
@@ -212,10 +269,14 @@ export const PomodoroView: React.FC<PomodoroViewProps> = ({
 
   const skipCurrentStage = () => {
     soundEngine.playChime("click");
+    soundEngine.stopAllAmbient(true);
+
     if (mode === "work") {
       const nextCompleted = completedSprintsCount + 1;
       setCompletedSprintsCount(nextCompleted);
       if (nextCompleted >= totalSprints) {
+        soundEngine.playChime("levelup");
+        setActiveAmbient(null);
         setShowSessionCompleteModal(true);
         setIsSessionActive(false);
         return;
@@ -228,6 +289,9 @@ export const PomodoroView: React.FC<PomodoroViewProps> = ({
     } else {
       setCurrentSprintIndex((prev) => prev + 1);
       setMode("work");
+      if (activeAmbient && isRunning) {
+        soundEngine.setAmbient(activeAmbient, true, ambientVolume);
+      }
     }
   };
 
@@ -246,6 +310,17 @@ export const PomodoroView: React.FC<PomodoroViewProps> = ({
     setAmbientVolume(newVol);
     if (activeAmbient) {
       soundEngine.setAmbient(activeAmbient, true, newVol);
+    }
+  };
+
+  const handleModeChange = (newMode: TimerMode) => {
+    if (newMode === mode) return;
+    soundEngine.playChime("click");
+    setMode(newMode);
+    if (newMode !== "work") {
+      soundEngine.stopAllAmbient();
+    } else if (isRunning && activeAmbient) {
+      soundEngine.setAmbient(activeAmbient, true, ambientVolume);
     }
   };
 
@@ -480,8 +555,9 @@ export const PomodoroView: React.FC<PomodoroViewProps> = ({
                 {isRunning ? "RUNNING" : "PAUSED"}
               </span>
               <button
-                onClick={() => setIsSessionActive(false)}
-                className="text-[11px] font-black underline hover:text-[#FF66C4]"
+                onClick={handleEndSession}
+                id="btn-pomodoro-end-session"
+                className="text-[11px] font-black underline hover:text-[#FF66C4] cursor-pointer"
               >
                 End Session
               </button>
@@ -492,7 +568,7 @@ export const PomodoroView: React.FC<PomodoroViewProps> = ({
             {/* Mode Indicator Badges */}
             <div className="flex items-center justify-center gap-2 sm:gap-4 flex-wrap">
               <button
-                onClick={() => setMode("work")}
+                onClick={() => handleModeChange("work")}
                 className={`px-4 sm:px-6 py-2 border-2 border-black font-black text-xs sm:text-sm uppercase transition-all ${
                   mode === "work"
                     ? "bg-[#FF66C4] shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
@@ -502,7 +578,7 @@ export const PomodoroView: React.FC<PomodoroViewProps> = ({
                 🔥 Focus Sprint ({workDuration}m)
               </button>
               <button
-                onClick={() => setMode("short_break")}
+                onClick={() => handleModeChange("short_break")}
                 className={`px-4 sm:px-6 py-2 border-2 border-black font-black text-xs sm:text-sm uppercase transition-all ${
                   mode === "short_break"
                     ? "bg-[#73EC8E] shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
@@ -512,7 +588,7 @@ export const PomodoroView: React.FC<PomodoroViewProps> = ({
                 ☕ Short Break ({shortBreakDuration}m)
               </button>
               <button
-                onClick={() => setMode("long_break")}
+                onClick={() => handleModeChange("long_break")}
                 className={`px-4 sm:px-6 py-2 border-2 border-black font-black text-xs sm:text-sm uppercase transition-all ${
                   mode === "long_break"
                     ? "bg-[#00F0FF] shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"

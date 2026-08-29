@@ -1,30 +1,23 @@
-import React, { useState, useMemo, useRef, useEffect } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   GraduationCap,
   Plus,
   Trash2,
   Edit2,
-  FileText,
-  Upload,
   Sparkles,
   Calculator,
   Award,
-  TrendingUp,
-  Filter,
-  CheckCircle2,
-  AlertCircle,
-  BarChart3,
   BookOpen,
-  ArrowRight,
   RefreshCw,
   Sliders,
-  Target,
   Check,
   Zap,
+  BarChart3,
 } from "lucide-react";
 import { CourseGrade, CourseCategory } from "../types";
 import { soundEngine } from "../utils/audioSynthesizer";
 import confetti from "canvas-confetti";
+import { TranscriptParserModal } from "./TranscriptParserModal";
 
 interface GpaManagementViewProps {
   courses: CourseGrade[];
@@ -95,13 +88,8 @@ export const GpaManagementView: React.FC<GpaManagementViewProps> = ({
   const [showCreditGoalModal, setShowCreditGoalModal] = useState(false);
   const [tempRequiredCredits, setTempRequiredCredits] = useState<number>(totalRequiredCredits);
 
-  // Transcript Parsing States
+  // Multimodal Transcript Parser Modal State
   const [isParserOpen, setIsParserOpen] = useState(false);
-  const [transcriptText, setTranscriptText] = useState("");
-  const [isParsing, setIsParsing] = useState(false);
-  const [parsedResults, setParsedResults] = useState<CourseGrade[] | null>(null);
-  const [parserFeedback, setParserFeedback] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Form State
   const [formCode, setFormCode] = useState("");
@@ -325,82 +313,6 @@ export const GpaManagementView: React.FC<GpaManagementViewProps> = ({
     setShowAddModal(false);
   };
 
-  // Transcript Parsing Handler
-  const handleParseTranscript = async () => {
-    if (!transcriptText.trim()) return;
-    setIsParsing(true);
-    setParserFeedback(null);
-    soundEngine.playChime("click");
-
-    try {
-      const res = await fetch("/api/gemini/parse-transcript", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcriptText }),
-      });
-
-      const data = await res.json();
-      if (data.courses && Array.isArray(data.courses)) {
-        const mapped: CourseGrade[] = data.courses.map((item: any, idx: number) => {
-          const cr = Number(item.credits) || 3;
-          const letter = (item.letterGrade || "A").toUpperCase().trim();
-          const gp4 = GRADE_POINTS_4[letter] ?? 4.0;
-          const num = item.numericGrade ? Number(item.numericGrade) : undefined;
-          const gp10 = num ? num / 10 : (GRADE_POINTS_10[letter] ?? 9.5);
-
-          return {
-            id: `parsed-${Date.now()}-${idx}`,
-            courseCode: item.courseCode || "CRS 101",
-            courseName: item.courseName || "Untitled Course",
-            term: item.term || "Fall 2026",
-            credits: cr,
-            letterGrade: letter,
-            numericGrade: num,
-            category: item.category || "Core",
-            qualityPoints4: Number((cr * gp4).toFixed(2)),
-            qualityPoints10: Number((cr * gp10).toFixed(2)),
-          };
-        });
-
-        setParsedResults(mapped);
-        setParserFeedback(`Successfully extracted ${mapped.length} courses! Review and import below.`);
-        soundEngine.playChime("success");
-      } else {
-        setParserFeedback("Could not extract courses. Please check transcript format.");
-      }
-    } catch (err) {
-      console.error("Transcript parsing error:", err);
-      setParserFeedback("Error contacting Gemini AI transcript parser.");
-    } finally {
-      setIsParsing(false);
-    }
-  };
-
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      const text = event.target?.result;
-      if (typeof text === "string") {
-        setTranscriptText(text);
-      }
-    };
-    reader.readAsText(file);
-  };
-
-  const handleConfirmImport = () => {
-    if (!parsedResults || parsedResults.length === 0) return;
-    onBatchAddCourses(parsedResults);
-    soundEngine.playChime("levelup");
-    confetti({ particleCount: 90, spread: 75 });
-    onAwardXp(parsedResults.length * 10);
-    setParsedResults(null);
-    setIsParserOpen(false);
-    setTranscriptText("");
-  };
-
   return (
     <div className="space-y-6 max-w-7xl mx-auto pb-12">
       {/* Top Banner Header */}
@@ -563,132 +475,6 @@ export const GpaManagementView: React.FC<GpaManagementViewProps> = ({
           </div>
         </div>
       </div>
-
-      {/* AI Transcript Parser Drawer / Panel */}
-      {isParserOpen && (
-        <div className="bg-white border-2 border-black p-5 sm:p-6 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] space-y-4">
-          <div className="flex items-center justify-between pb-3 border-b-2 border-black">
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-5 h-5 text-black" />
-              <h2 className="text-base sm:text-lg font-black uppercase text-black">
-                Gemini AI Transcript & Grade Sheet Parser
-              </h2>
-            </div>
-            <button
-              onClick={() => setIsParserOpen(false)}
-              className="text-sm font-black px-2 border border-black hover:bg-gray-100"
-            >
-              ✕
-            </button>
-          </div>
-
-          <p className="text-xs font-bold text-gray-700">
-            Paste raw transcript text or upload your syllabus/grade sheet. Gemini extracts course codes, titles, credits, and letter grades automatically.
-          </p>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="md:col-span-2 space-y-2">
-              <textarea
-                rows={5}
-                value={transcriptText}
-                onChange={(e) => setTranscriptText(e.target.value)}
-                placeholder="Paste transcript text here (e.g. 'CS 201 Data Structures 4.0 A, MATH 240 Linear Algebra 3.0 A-...')"
-                className="w-full p-3 bg-[#F4F4F0] border-2 border-black font-mono text-xs text-black focus:outline-none focus:bg-white"
-              />
-            </div>
-
-            <div className="flex flex-col justify-between p-4 bg-[#F4F4F0] border-2 border-black space-y-3">
-              <div>
-                <span className="text-xs font-black uppercase text-black block mb-1">
-                  Upload Document / Text File:
-                </span>
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  onChange={handleFileUpload}
-                  accept=".txt,.csv,.json,.doc,.pdf"
-                  className="w-full text-xs font-bold file:mr-2 file:py-1 file:px-2 file:border-2 file:border-black file:bg-[#FFE600] file:font-black file:text-xs file:cursor-pointer"
-                />
-              </div>
-
-              <button
-                onClick={handleParseTranscript}
-                disabled={isParsing || !transcriptText.trim()}
-                id="btn-run-transcript-parse"
-                className="w-full flex items-center justify-center gap-2 py-3 bg-[#FFE600] border-2 border-black font-black text-xs uppercase shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] hover:bg-[#fff04d] active:translate-x-0.5 active:translate-y-0.5 disabled:opacity-50"
-              >
-                {isParsing ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                    Parsing Courses...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-4 h-4" />
-                    Parse With AI
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {parserFeedback && (
-            <div className="p-3 bg-[#00F0FF]/20 border-2 border-black font-bold text-xs text-black">
-              ⚡ {parserFeedback}
-            </div>
-          )}
-
-          {/* Parsed Staging Results */}
-          {parsedResults && parsedResults.length > 0 && (
-            <div className="pt-3 border-t-2 border-black space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="font-black text-xs uppercase text-black">
-                  Extracted Courses Preview ({parsedResults.length}):
-                </span>
-                <button
-                  onClick={handleConfirmImport}
-                  id="btn-confirm-import-courses"
-                  className="flex items-center gap-1.5 px-4 py-2 bg-[#73EC8E] border-2 border-black font-black text-xs uppercase shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] hover:bg-[#62e07e] active:translate-x-0.5 active:translate-y-0.5"
-                >
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>Import All to Transcript (+{parsedResults.length * 10} XP)</span>
-                </button>
-              </div>
-
-              <div className="max-h-60 overflow-y-auto border-2 border-black bg-[#F4F4F0]">
-                <table className="w-full text-left text-xs font-bold border-collapse">
-                  <thead>
-                    <tr className="bg-black text-white text-[11px] uppercase">
-                      <th className="p-2">Code</th>
-                      <th className="p-2">Course Title</th>
-                      <th className="p-2">Term</th>
-                      <th className="p-2">Credits</th>
-                      <th className="p-2">Grade</th>
-                      <th className="p-2">Category</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {parsedResults.map((c, i) => (
-                      <tr key={i} className="border-b border-black/20 hover:bg-white">
-                        <td className="p-2 font-mono font-black">{c.courseCode}</td>
-                        <td className="p-2">{c.courseName}</td>
-                        <td className="p-2">{c.term}</td>
-                        <td className="p-2">{c.credits}</td>
-                        <td className="p-2">
-                          <span className="bg-[#FFE600] px-1.5 py-0.5 border border-black">
-                            {c.letterGrade}
-                          </span>
-                        </td>
-                        <td className="p-2">{c.category}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Main 2-Section Grid: Course Table + Target Simulator */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -1284,6 +1070,13 @@ export const GpaManagementView: React.FC<GpaManagementViewProps> = ({
           </form>
         </div>
       )}
+      {/* AI Multimodal Transcript Parser Modal */}
+      <TranscriptParserModal
+        isOpen={isParserOpen}
+        onClose={() => setIsParserOpen(false)}
+        onImportCourses={onBatchAddCourses}
+        onAwardXp={onAwardXp}
+      />
     </div>
   );
 };

@@ -421,12 +421,12 @@ Make all 4 options believable and plausible (no joke options). Provide a solid c
     }
   });
 
-  // AI Transcript & Course Parser Endpoint
+  // AI Transcript & Course Multimodal Parser Endpoint
   app.post("/api/gemini/parse-transcript", async (req, res) => {
     try {
       const { transcriptText = "", base64Data, mimeType } = req.body;
       if (!transcriptText && !base64Data) {
-        return res.status(400).json({ error: "Transcript text or document is required" });
+        return res.status(400).json({ error: "Transcript text or document/image is required" });
       }
 
       const ai = getGeminiClient();
@@ -439,8 +439,10 @@ Make all 4 options believable and plausible (no joke options). Provide a solid c
             courseName: "Algorithms & Complexities",
             term: "Spring 2026",
             credits: 4,
+            grade: "A",
             letterGrade: "A",
             numericGrade: 95,
+            qualityPoints: 16.0,
             category: "Core",
           },
           {
@@ -448,8 +450,10 @@ Make all 4 options believable and plausible (no joke options). Provide a solid c
             courseName: "Probability & Statistics for Engineers",
             term: "Spring 2026",
             credits: 3,
+            grade: "A-",
             letterGrade: "A-",
             numericGrade: 89,
+            qualityPoints: 11.1,
             category: "Core",
           },
           {
@@ -457,32 +461,80 @@ Make all 4 options believable and plausible (no joke options). Provide a solid c
             courseName: "University Physics II (Electromagnetism)",
             term: "Spring 2026",
             credits: 4,
+            grade: "B+",
             letterGrade: "B+",
             numericGrade: 86,
+            qualityPoints: 13.2,
             category: "Gen Ed",
           },
+          {
+            courseCode: "SWE 240",
+            courseName: "Software Architecture & Design Patterns",
+            term: "Fall 2025",
+            credits: 3,
+            grade: "A",
+            letterGrade: "A",
+            numericGrade: 94,
+            qualityPoints: 12.0,
+            category: "Major Elective",
+          },
         ];
-        return res.json({ courses: sampleParsed, simulated: true });
+        return res.json({
+          institution: "StudiSpace Academic Portal",
+          courses: sampleParsed,
+          extractedCourses: sampleParsed,
+          simulated: true,
+        });
       }
 
-      const systemInstruction = `You are an expert academic registrar AI that parses student transcripts, grade reports, and syllabi into structured course data. Extract all courses with high precision. Standardize letter grades into standard US scale (A+, A, A-, B+, B, B-, C+, C, C-, D+, D, F). If numeric grade (0-100) is present, extract it or estimate reasonable number based on letter grade. Categorize each into Core, Major Elective, Gen Ed, Lab, or Honors.`;
+      let cleanBase64 = "";
+      let effectiveMimeType = mimeType || "image/png";
+
+      if (base64Data && typeof base64Data === "string") {
+        if (base64Data.startsWith("data:")) {
+          const match = base64Data.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) {
+            effectiveMimeType = match[1];
+            cleanBase64 = match[2];
+          } else {
+            cleanBase64 = base64Data.replace(/^data:[^,]+,/, "");
+          }
+        } else {
+          cleanBase64 = base64Data;
+        }
+      }
+
+      const systemInstruction = `You are a world-class academic registrar and visual OCR AI. Your task is to accurately extract all course grades and curriculum records from academic transcripts, grade portal screenshots, report cards, or syllabi (PNG, JPG, WEBP, PDF, or text).
+Carefully read tabular columns for:
+1. Course Code (e.g. "CS 201", "MATH 101", "EE 305")
+2. Course Title / Name (e.g. "Data Structures & Algorithms")
+3. Term / Semester / Year (e.g. "Fall 2025", "Spring 2026", "Semester 1")
+4. Credit Hours / Units (e.g. 3, 4, 1.5)
+5. Letter Grade (e.g. "A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D", "F", or scale values like "9.0")
+6. Numeric Percentage or raw score (0-100) if visible
+7. Quality Points (Credits * Grade Points, e.g. 4 * 4.0 = 16.0)
+8. Academic Category (Core, Major Elective, Gen Ed, Lab, or Honors)
+9. Name of the university / college / institution if visible.
+
+If the image or text does not contain any academic records or is completely unreadable/blurred, return an empty course array and provide a clear warning explanation.`;
 
       let contents: any[] = [];
-      if (base64Data && mimeType) {
+
+      if (cleanBase64) {
+        const imagePart = {
+          inlineData: {
+            mimeType: effectiveMimeType,
+            data: cleanBase64,
+          },
+        };
+        const textPrompt = transcriptText.trim()
+          ? `Perform visual OCR on this transcript scan/screenshot and extract all tabular course rows.\n\nAdditional user notes:\n${transcriptText}`
+          : `Perform high-precision visual OCR on this academic transcript, grade report screenshot, or document. Extract every course code, course title, term/semester, credit hours, grade, and quality points. Return structured JSON.`;
+
         contents = [
           {
             role: "user",
-            parts: [
-              {
-                inlineData: {
-                  mimeType,
-                  data: base64Data,
-                },
-              },
-              {
-                text: "Extract all course grades, course codes, course names, terms/semesters, credit hours, and grades from this academic transcript or grade report.",
-              },
-            ],
+            parts: [imagePart, { text: textPrompt }],
           },
         ];
       } else {
@@ -491,7 +543,7 @@ Make all 4 options believable and plausible (no joke options). Provide a solid c
             role: "user",
             parts: [
               {
-                text: `Extract all courses, codes, names, terms/semesters, credits, and letter grades from this transcript text:\n\n${transcriptText}`,
+                text: `Extract all courses, codes, names, terms, credits, letter grades, and quality points from this transcript text:\n\n${transcriptText}`,
               },
             ],
           },
@@ -507,7 +559,15 @@ Make all 4 options believable and plausible (no joke options). Provide a solid c
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              courses: {
+              institution: {
+                type: Type.STRING,
+                description: "Name of the university, college, or school if detected",
+              },
+              warning: {
+                type: Type.STRING,
+                description: "Warning message if image was blurry, skewed, or had missing sections",
+              },
+              extractedCourses: {
                 type: Type.ARRAY,
                 items: {
                   type: Type.OBJECT,
@@ -516,27 +576,46 @@ Make all 4 options believable and plausible (no joke options). Provide a solid c
                     courseName: { type: Type.STRING },
                     term: { type: Type.STRING },
                     credits: { type: Type.NUMBER },
+                    grade: { type: Type.STRING },
                     letterGrade: { type: Type.STRING },
                     numericGrade: { type: Type.NUMBER },
+                    qualityPoints: { type: Type.NUMBER },
                     category: {
                       type: Type.STRING,
                       enum: ["Core", "Major Elective", "Gen Ed", "Lab", "Honors"],
                     },
                   },
-                  required: ["courseCode", "courseName", "term", "credits", "letterGrade", "category"],
+                  required: ["courseCode", "courseName", "term", "credits", "category"],
                 },
               },
             },
-            required: ["courses"],
+            required: ["extractedCourses"],
           },
         },
       });
 
-      const parsed = JSON.parse(response.text || '{"courses":[]}');
-      res.json(parsed);
+      const parsed = JSON.parse(response.text || '{"extractedCourses":[]}');
+      const coursesList = (parsed.extractedCourses || parsed.courses || []).map((item: any) => {
+        const gradeStr = item.letterGrade || item.grade || "A";
+        return {
+          ...item,
+          letterGrade: gradeStr,
+          grade: gradeStr,
+        };
+      });
+
+      res.json({
+        institution: parsed.institution || "",
+        courses: coursesList,
+        extractedCourses: coursesList,
+        warning: parsed.warning,
+      });
     } catch (err: any) {
       console.error("Transcript parse error:", err);
-      res.status(500).json({ error: "Failed to parse transcript", details: err?.message });
+      res.status(500).json({
+        error: "Failed to parse transcript with Gemini Vision OCR",
+        details: err?.message || "Internal extraction error",
+      });
     }
   });
 

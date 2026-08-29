@@ -10,7 +10,10 @@ import { QuizArenaView } from "./components/QuizArenaView";
 import { AssignmentsView } from "./components/AssignmentsView";
 import { GpaManagementView } from "./components/GpaManagementView";
 import { SoundscapesView } from "./components/SoundscapesView";
+import { DocumentVaultView } from "./components/DocumentVaultView";
 import { BadgesModal } from "./components/BadgesModal";
+import { AboutModal } from "./components/AboutModal";
+import { ProfileModal } from "./components/ProfileModal";
 import {
   AppTab,
   UserStats,
@@ -20,6 +23,7 @@ import {
   Quiz,
   Badge,
   CourseGrade,
+  StudyDocument,
 } from "./types";
 import {
   INITIAL_STATS,
@@ -29,6 +33,7 @@ import {
   INITIAL_NOTES,
   INITIAL_QUIZZES,
   INITIAL_COURSES,
+  INITIAL_STUDY_DOCUMENTS,
 } from "./utils/initialData";
 import { soundEngine } from "./utils/audioSynthesizer";
 import confetti from "canvas-confetti";
@@ -49,19 +54,36 @@ import {
   saveCourseToDb,
   saveBatchCoursesToDb,
   deleteCourseFromDb,
+  subscribeToStudyDocuments,
+  uploadStudyDocument,
+  deleteStudyDocument,
+  togglePinDocument,
 } from "./utils/firestoreService";
 
 export default function App() {
   const { user, userProfile, loading, updateUserStats } = useAuth();
   const [currentTab, setCurrentTab] = useState<AppTab>("dashboard");
   const [isBadgesModalOpen, setIsBadgesModalOpen] = useState(false);
+  const [isAboutModalOpen, setIsAboutModalOpen] = useState(false);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isAudioMuted, setIsAudioMuted] = useState(false);
+  const [activeSoundCount, setActiveSoundCount] = useState(0);
 
   // Initial navigation parameters
   const [pomodoroTask, setPomodoroTask] = useState<string | undefined>();
   const [pomodoroAssignmentId, setPomodoroAssignmentId] = useState<string | undefined>();
   const [activeDeckId, setActiveDeckId] = useState<string | undefined>();
   const [activeQuizId, setActiveQuizId] = useState<string | undefined>();
+
+  // Subscribe to Sound Engine to keep Header audio status indicator synced in real-time
+  useEffect(() => {
+    const unsubAudio = soundEngine.subscribe((count) => {
+      setActiveSoundCount(count);
+    });
+    return () => {
+      unsubAudio();
+    };
+  }, []);
 
   // Persistent States
   const [stats, setStats] = useState<UserStats>(() => {
@@ -79,6 +101,10 @@ export default function App() {
   const [notes, setNotes] = useState<StudyNote[]>(INITIAL_NOTES);
   const [quizzes, setQuizzes] = useState<Quiz[]>(INITIAL_QUIZZES);
   const [courses, setCourses] = useState<CourseGrade[]>(INITIAL_COURSES);
+  const [documents, setDocuments] = useState<StudyDocument[]>(() => {
+    const saved = localStorage.getItem("studispace_guest_documents");
+    return saved ? JSON.parse(saved) : INITIAL_STUDY_DOCUMENTS;
+  });
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -99,6 +125,9 @@ export default function App() {
     const unsubCourses = subscribeToCourses(user?.uid || null, (remoteList) => {
       if (remoteList.length > 0) setCourses(remoteList);
     });
+    const unsubDocs = subscribeToStudyDocuments(user?.uid || null, (remoteList) => {
+      if (remoteList.length > 0) setDocuments(remoteList);
+    });
 
     return () => {
       unsubAssignments();
@@ -106,6 +135,7 @@ export default function App() {
       unsubNotes();
       unsubQuizzes();
       unsubCourses();
+      unsubDocs();
     };
   }, [user?.uid]);
 
@@ -205,6 +235,30 @@ export default function App() {
     }
   };
 
+  const handleUploadDocument = async (
+    file: File,
+    metadata?: Partial<StudyDocument>
+  ): Promise<StudyDocument> => {
+    const uploaded = await uploadStudyDocument(user?.uid || "guest", file, metadata);
+    setDocuments((prev) => [uploaded, ...prev]);
+    showToast(`Uploaded "${uploaded.title}" to Vault`);
+    return uploaded;
+  };
+
+  const handleDeleteDocument = async (id: string, storagePath?: string) => {
+    setDocuments((prev) => prev.filter((d) => d.id !== id));
+    await deleteStudyDocument(user?.uid || "guest", id, storagePath);
+    showToast("Document removed from Vault");
+  };
+
+  const handleTogglePinDocument = async (id: string, pinned: boolean) => {
+    setDocuments((prev) =>
+      prev.map((d) => (d.id === id ? { ...d, pinned } : d))
+    );
+    await togglePinDocument(user?.uid || "guest", id, pinned);
+    showToast(pinned ? "Document pinned to top" : "Document unpinned");
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#FFF9E9] flex flex-col items-center justify-center p-4">
@@ -244,9 +298,17 @@ export default function App() {
           soundEngine.playChime("click");
           setIsBadgesModalOpen(true);
         }}
+        onOpenAbout={() => {
+          soundEngine.playChime("click");
+          setIsAboutModalOpen(true);
+        }}
+        onOpenProfile={() => {
+          soundEngine.playChime("click");
+          setIsProfileModalOpen(true);
+        }}
         isAudioMuted={isAudioMuted}
         onToggleMute={handleToggleMute}
-        activeSoundCount={0}
+        activeSoundCount={activeSoundCount}
       />
 
       {/* Main Content Area */}
@@ -274,6 +336,25 @@ export default function App() {
             onOpenQuiz={(quizId) => {
               setActiveQuizId(quizId);
               setCurrentTab("quiz");
+            }}
+          />
+        )}
+
+        {currentTab === "documents" && (
+          <DocumentVaultView
+            documents={documents}
+            onUploadDocument={handleUploadDocument}
+            onDeleteDocument={handleDeleteDocument}
+            onTogglePinDocument={handleTogglePinDocument}
+            onAwardXp={handleAwardXp}
+            courses={courses}
+            onAskSocrates={(title, context) => {
+              setCurrentTab("socrates_ai");
+              showToast(`Asking Socrates about ${title}`);
+            }}
+            onCreateFlashcards={(title) => {
+              setCurrentTab("flashcards");
+              showToast(`Preparing flashcards for ${title}`);
             }}
           />
         )}
@@ -455,6 +536,19 @@ export default function App() {
         onClose={() => setIsBadgesModalOpen(false)}
         stats={stats}
         badges={badges}
+      />
+
+      {/* About Project & System Arsenal Modal */}
+      <AboutModal
+        isOpen={isAboutModalOpen}
+        onClose={() => setIsAboutModalOpen(false)}
+      />
+
+      {/* Scholar User Profile Modal */}
+      <ProfileModal
+        isOpen={isProfileModalOpen}
+        onClose={() => setIsProfileModalOpen(false)}
+        onShowToast={showToast}
       />
 
       {/* Ephemeral Toast Notification */}

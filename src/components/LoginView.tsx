@@ -14,10 +14,12 @@ import {
   Eye,
   EyeOff,
   Lightbulb,
+  Info,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { describeAuthError } from "../utils/authErrors";
 import { soundEngine } from "../utils/audioSynthesizer";
+import { AboutModal } from "./AboutModal";
 
 const MAJORS = [
   "Computer Science",
@@ -52,6 +54,7 @@ export const LoginView: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isAboutOpen, setIsAboutOpen] = useState(false);
 
   // A misconfigured .env blocks every sign-in method, so it outranks anything
   // this form produced. A redirect sign-in failure arrives on a fresh page load,
@@ -105,6 +108,8 @@ export const LoginView: React.FC = () => {
           password,
           displayName || "Scholar",
           majorToSave,
+          "Fall 2026",
+          university,
           selectedYear
         );
       }
@@ -148,15 +153,27 @@ export const LoginView: React.FC = () => {
           </span>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5">
+          <button
+            onClick={() => {
+              soundEngine.playChime("click");
+              setIsAboutOpen(true);
+            }}
+            id="btn-login-about"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#FFE600] hover:bg-[#FFF04D] border-2 border-black font-black text-xs uppercase shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:translate-x-0.5 active:translate-y-0.5 transition-all"
+            title="Learn more about StudiSpace"
+          >
+            <Info className="w-3.5 h-3.5 text-black" />
+            <span>About Project</span>
+          </button>
           <button
             onClick={handleGuestEntry}
-            id="btn-guest-quick-demo"
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#82FB9B] hover:bg-[#65DE82] border-2 border-black font-black text-xs uppercase shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:translate-x-0.5 active:translate-y-0.5 transition-all"
-            title="Instant preview without login"
+            id="btn-guest-entry-header"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-gray-100 border-2 border-black font-black text-xs uppercase shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:translate-x-0.5 active:translate-y-0.5 transition-all"
+            title="Explore StudiSpace as Guest"
           >
-            <Zap className="w-3.5 h-3.5" />
-            <span>Instant Demo Mode</span>
+            <Zap className="w-3.5 h-3.5 text-black" />
+            <span>Guest Scholar</span>
           </button>
         </div>
       </header>
@@ -603,6 +620,9 @@ export const LoginView: React.FC = () => {
           <span>GEMINI + LOCAL QWEN3</span>
         </div>
       </footer>
+
+      {/* About Project Modal */}
+      <AboutModal isOpen={isAboutOpen} onClose={() => setIsAboutOpen(false)} />
     </div>
   );
 };

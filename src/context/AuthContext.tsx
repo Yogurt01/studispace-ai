@@ -29,9 +29,16 @@ export interface UserProfile {
   photoURL: string;
   major: string;
   term: string;
+  university?: string;
+  year?: string;
+  bio?: string;
+  targetGpa?: number;
+  studyGoal?: string;
+  avatarBg?: string;
   stats: UserStats;
   createdAt?: string;
   lastLoginAt?: string;
+  updatedAt?: string;
 }
 
 interface AuthContextType {
@@ -50,11 +57,14 @@ interface AuthContextType {
     pass: string,
     displayName: string,
     major?: string,
-    term?: string
+    term?: string,
+    university?: string,
+    year?: string
   ) => Promise<void>;
   guestSignIn: () => void;
   logout: () => Promise<void>;
   updateUserStats: (newStats: Partial<UserStats>) => Promise<void>;
+  updateUserProfile: (updates: Partial<UserProfile>) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -194,7 +204,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     pass: string,
     displayName: string,
     major?: string,
-    term?: string
+    term?: string,
+    university?: string,
+    year?: string
   ) => {
     signUpInFlight.current = true;
     try {
@@ -219,9 +231,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         photoURL: "",
         major: major || "Computer Science",
         term: term || "Fall 2026",
+        university: university || "",
+        year: year || "4th Year (Senior)",
+        bio: "Curious student aiming for academic excellence.",
+        targetGpa: 3.8,
+        studyGoal: "3 hours/day",
+        avatarBg: "#FFE600",
         stats: INITIAL_STATS,
         createdAt: new Date().toISOString(),
         lastLoginAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       };
       await setDoc(userDocRef, newProfile);
       setUserProfile(newProfile);
@@ -262,6 +281,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       photoURL: "",
       major: "Computer Science",
       term: "Fall 2026",
+      university: "StudiSpace Academy",
+      year: "Senior",
+      bio: "Exploring StudiSpace Academic Operating System.",
+      targetGpa: 3.9,
+      studyGoal: "2.5 hours/day",
+      avatarBg: "#FFE600",
       stats: INITIAL_STATS,
     });
   };
@@ -283,7 +308,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const updateUserStats = async (newStats: Partial<UserStats>) => {
-    if (!user || user.uid === GUEST_USER_ID) return;
+    if (!user || user.uid === GUEST_USER_ID) {
+      if (userProfile) {
+        setUserProfile({
+          ...userProfile,
+          stats: {
+            ...userProfile.stats,
+            ...newStats,
+          },
+        });
+      }
+      return;
+    }
     try {
       const userDocRef = doc(db, "users", user.uid);
       const currentStats = userProfile?.stats || INITIAL_STATS;
@@ -297,6 +333,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       });
     } catch (err) {
       console.error("Failed to update user stats in Firestore:", err);
+    }
+  };
+
+  const updateUserProfile = async (updates: Partial<UserProfile>) => {
+    const updatedProfile = userProfile ? { ...userProfile, ...updates, updatedAt: new Date().toISOString() } : null;
+    setUserProfile(updatedProfile);
+
+    // Update Firebase Auth displayName if changed
+    if (user && updates.displayName && user.uid !== GUEST_USER_ID) {
+      try {
+        await updateProfile(user, {
+          displayName: updates.displayName,
+          photoURL: updates.photoURL !== undefined ? updates.photoURL : user.photoURL,
+        });
+      } catch (authErr) {
+        console.warn("Could not update auth display profile:", authErr);
+      }
+    }
+
+    // Update Firestore user document
+    if (user && user.uid !== GUEST_USER_ID) {
+      try {
+        const userDocRef = doc(db, "users", user.uid);
+        await updateDoc(userDocRef, {
+          ...updates,
+          updatedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.error("Failed to update user profile in Firestore:", err);
+      }
     }
   };
 
@@ -315,6 +381,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         guestSignIn,
         logout,
         updateUserStats,
+        updateUserProfile,
       }}
     >
       {children}

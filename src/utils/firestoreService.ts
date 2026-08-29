@@ -10,7 +10,7 @@ import {
   onSnapshot,
   writeBatch,
 } from "firebase/firestore";
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { ref, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { db, storage } from "./firebase";
 import {
   ChatMessage,
@@ -19,6 +19,7 @@ import {
   Assignment,
   FlashcardDeck,
   CourseGrade,
+  StudyDocument,
 } from "../types";
 import {
   GUEST_USER_ID,
@@ -27,6 +28,7 @@ import {
   INITIAL_NOTES,
   INITIAL_QUIZZES,
   INITIAL_COURSES,
+  INITIAL_STUDY_DOCUMENTS,
 } from "./initialData";
 
 // --- FIREBASE STORAGE & DOCUMENTS SERVICE ---
@@ -91,15 +93,212 @@ export async function uploadDocumentToFirebaseStorage(
   }
 }
 
+export async function uploadStudyDocument(
+  userId: string,
+  file: File,
+  metadata?: Partial<StudyDocument>
+): Promise<StudyDocument> {
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const timestamp = Date.now();
+  const storagePath = `users/${userId}/documents/${timestamp}_${safeName}`;
+  const storageRef = ref(storage, storagePath);
+
+  let downloadUrl = "";
+  let finalStoragePath: string | undefined = storagePath;
+
+  try {
+    const uploadResult = await uploadBytes(storageRef, file);
+    downloadUrl = await getDownloadURL(uploadResult.ref);
+  } catch (err) {
+    console.warn("Firebase Storage direct upload failed/fallback to blob URL:", err);
+    downloadUrl = URL.createObjectURL(file);
+    finalStoragePath = undefined;
+  }
+
+  const docId = `doc-${timestamp}`;
+  const newDoc: StudyDocument = {
+    id: docId,
+    userId: userId || GUEST_USER_ID,
+    title: metadata?.title?.trim() || file.name.replace(/\.[^/.]+$/, "").replace(/_/g, " "),
+    fileName: file.name,
+    fileUrl: downloadUrl,
+    storagePath: finalStoragePath,
+    fileType: file.type || "application/pdf",
+    fileSize: file.size,
+    uploadedAt: new Date().toISOString(),
+    courseTag: metadata?.courseTag || "General",
+    category: metadata?.category || "Lecture Slide",
+    pinned: metadata?.pinned ?? false,
+  };
+
+  // If user is logged in, save to Firestore
+  if (userId && userId !== GUEST_USER_ID) {
+    try {
+      await setDoc(doc(db, "documents", docId), newDoc);
+    } catch (firestoreErr) {
+      console.warn("Could not save document metadata to Firestore:", firestoreErr);
+    }
+  } else {
+    // Save to guest localStorage
+    try {
+      const saved = localStorage.getItem("studispace_guest_documents");
+      const currentList: StudyDocument[] = saved ? JSON.parse(saved) : INITIAL_STUDY_DOCUMENTS;
+      localStorage.setItem("studispace_guest_documents", JSON.stringify([newDoc, ...currentList]));
+    } catch (localErr) {
+      console.warn("Guest storage write failed:", localErr);
+    }
+  }
+
+  return newDoc;
+}
+
+export async function fetchStudyDocuments(userId: string): Promise<StudyDocument[]> {
+  if (!userId || userId === GUEST_USER_ID) {
+    try {
+      const saved = localStorage.getItem("studispace_guest_documents");
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.warn("Failed to read guest documents from storage", e);
+    }
+    return INITIAL_STUDY_DOCUMENTS;
+  }
+
+  try {
+    const docsRef = collection(db, "documents");
+    const q = query(docsRef, where("userId", "==", userId));
+    const snapshot = await getDocs(q);
+    const list: StudyDocument[] = [];
+    snapshot.forEach((d) => {
+      list.push({ id: d.id, ...d.data() } as StudyDocument);
+    });
+    list.sort((a, b) => {
+      if (a.pinned && !b.pinned) return -1;
+      if (!a.pinned && b.pinned) return 1;
+      return (b.uploadedAt || "").localeCompare(a.uploadedAt || "");
+    });
+    return list.length > 0 ? list : INITIAL_STUDY_DOCUMENTS;
+  } catch (err) {
+    console.error("fetchStudyDocuments error:", err);
+    return INITIAL_STUDY_DOCUMENTS;
+  }
+}
+
+export function subscribeToStudyDocuments(
+  userId: string | null,
+  callback: (docs: StudyDocument[]) => void
+) {
+  if (!userId || userId === GUEST_USER_ID) {
+    try {
+      const saved = localStorage.getItem("studispace_guest_documents");
+      const list = saved ? JSON.parse(saved) : INITIAL_STUDY_DOCUMENTS;
+      callback(list);
+    } catch {
+      callback(INITIAL_STUDY_DOCUMENTS);
+    }
+    return () => {};
+  }
+
+  try {
+    const docsRef = collection(db, "documents");
+    const q = query(docsRef, where("userId", "==", userId));
+
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const list: StudyDocument[] = [];
+        snapshot.forEach((d) => {
+          list.push({ id: d.id, ...d.data() } as StudyDocument);
+        });
+        list.sort((a, b) => {
+          if (a.pinned && !b.pinned) return -1;
+          if (!a.pinned && b.pinned) return 1;
+          return (b.uploadedAt || "").localeCompare(a.uploadedAt || "");
+        });
+        callback(list.length > 0 ? list : INITIAL_STUDY_DOCUMENTS);
+      },
+      (err) => {
+        console.warn("StudyDocuments onSnapshot fallback:", err);
+        callback(INITIAL_STUDY_DOCUMENTS);
+      }
+    );
+  } catch (err) {
+    console.error("subscribeToStudyDocuments error:", err);
+    callback(INITIAL_STUDY_DOCUMENTS);
+    return () => {};
+  }
+}
+
+export async function deleteStudyDocument(
+  userId: string,
+  documentId: string,
+  storagePath?: string
+): Promise<void> {
+  if (storagePath) {
+    try {
+      const storageRef = ref(storage, storagePath);
+      await deleteObject(storageRef);
+    } catch (err) {
+      console.warn("Firebase Storage file delete error:", err);
+    }
+  }
+
+  if (userId && userId !== GUEST_USER_ID) {
+    try {
+      await deleteDoc(doc(db, "documents", documentId));
+    } catch (err) {
+      console.error("deleteStudyDocument Firestore error:", err);
+    }
+  } else {
+    try {
+      const saved = localStorage.getItem("studispace_guest_documents");
+      if (saved) {
+        const currentList: StudyDocument[] = JSON.parse(saved);
+        const filtered = currentList.filter((d) => d.id !== documentId);
+        localStorage.setItem("studispace_guest_documents", JSON.stringify(filtered));
+      }
+    } catch (err) {
+      console.warn("Guest document deletion failed:", err);
+    }
+  }
+}
+
+export async function togglePinDocument(
+  userId: string,
+  documentId: string,
+  pinned: boolean
+): Promise<void> {
+  if (userId && userId !== GUEST_USER_ID) {
+    try {
+      await updateDoc(doc(db, "documents", documentId), { pinned });
+    } catch (err) {
+      console.error("togglePinDocument error:", err);
+    }
+  } else {
+    try {
+      const saved = localStorage.getItem("studispace_guest_documents");
+      const currentList: StudyDocument[] = saved ? JSON.parse(saved) : INITIAL_STUDY_DOCUMENTS;
+      const updated = currentList.map((d) => (d.id === documentId ? { ...d, pinned } : d));
+      localStorage.setItem("studispace_guest_documents", JSON.stringify(updated));
+    } catch (err) {
+      console.warn("Guest toggle pin failed:", err);
+    }
+  }
+}
+
+export async function saveStudyDocumentToDb(docData: StudyDocument): Promise<void> {
+  if (docData.userId && docData.userId !== GUEST_USER_ID) {
+    try {
+      await setDoc(doc(db, "documents", docData.id), docData);
+    } catch (err) {
+      console.error("saveStudyDocumentToDb error:", err);
+    }
+  }
+}
+
 export function subscribeToDocuments(
   userId: string | null,
   callback: (docs: UploadedStudyDocument[]) => void
 ) {
-  // Documents are private to their uploader, so the query must be scoped to a
-  // single userId: security rules reject any query that could match another
-  // student's documents. Ordering is applied client-side because an equality
-  // filter combined with orderBy would require a deployed composite index.
-  // Guest Scholars have no Firebase Auth user, so they are treated as signed out.
   if (!userId || userId === GUEST_USER_ID) {
     callback([]);
     return () => {};

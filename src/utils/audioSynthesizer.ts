@@ -10,6 +10,7 @@ class AudioEngine {
       intervalId?: number;
     }
   > = new Map();
+  private listeners: Set<(activeCount: number, activeTracks: string[]) => void> = new Set();
 
   private getContext(): AudioContext {
     if (!this.ctx) {
@@ -21,6 +22,38 @@ class AudioEngine {
       this.ctx.resume();
     }
     return this.ctx;
+  }
+
+  public subscribe(listener: (activeCount: number, activeTracks: string[]) => void): () => void {
+    this.listeners.add(listener);
+    listener(this.ambientNodes.size, Array.from(this.ambientNodes.keys()));
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private notifyListeners() {
+    const count = this.ambientNodes.size;
+    const tracks = Array.from(this.ambientNodes.keys());
+    this.listeners.forEach((l) => {
+      try {
+        l(count, tracks);
+      } catch (err) {
+        console.warn("AudioEngine listener error", err);
+      }
+    });
+  }
+
+  public getActiveCount(): number {
+    return this.ambientNodes.size;
+  }
+
+  public getActiveTracks(): string[] {
+    return Array.from(this.ambientNodes.keys());
+  }
+
+  public isTrackPlaying(id: string): boolean {
+    return this.ambientNodes.has(id);
   }
 
   // Play crisp Neo-Brutalist notification sounds
@@ -116,6 +149,19 @@ class AudioEngine {
     }
   }
 
+  // Stop a specific soundscape by id or all if not specified
+  public stopSoundscape(id?: string, immediate: boolean = false) {
+    if (!id) {
+      this.stopAllAmbient(immediate);
+      return;
+    }
+    this.setAmbient(id, false);
+  }
+
+  public stopActiveSoundscape(id?: string) {
+    this.stopSoundscape(id, true);
+  }
+
   // Set ambient track volume (0 to 1) or start/stop
   public setAmbient(id: string, playing: boolean, volume: number = 0.5) {
     try {
@@ -124,18 +170,34 @@ class AudioEngine {
       if (!playing) {
         const existing = this.ambientNodes.get(id);
         if (existing) {
-          existing.gainNode.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+          this.ambientNodes.delete(id);
+          this.notifyListeners();
+
+          try {
+            existing.gainNode.gain.cancelScheduledValues(ctx.currentTime);
+            existing.gainNode.gain.setValueAtTime(existing.gainNode.gain.value, ctx.currentTime);
+            // Smoothly ramp down gain over 50ms to eliminate audible pops
+            existing.gainNode.gain.linearRampToValueAtTime(0.0001, ctx.currentTime + 0.05);
+          } catch (_) {}
+
+          if (existing.intervalId) {
+            clearInterval(existing.intervalId);
+            existing.intervalId = undefined;
+          }
+
           setTimeout(() => {
             existing.sources.forEach((s) => {
               try {
                 if ("stop" in s && typeof (s as AudioScheduledSourceNode).stop === "function") {
                   (s as AudioScheduledSourceNode).stop();
                 }
+                s.disconnect();
               } catch (_) {}
             });
-            if (existing.intervalId) clearInterval(existing.intervalId);
-            this.ambientNodes.delete(id);
-          }, 350);
+            try {
+              existing.gainNode.disconnect();
+            } catch (_) {}
+          }, 60);
         }
         return;
       }
@@ -323,15 +385,25 @@ class AudioEngine {
         sources,
         intervalId,
       });
+      this.notifyListeners();
     } catch (e) {
       console.warn("Ambient audio error", e);
     }
   }
 
-  public stopAllAmbient() {
-    this.ambientNodes.forEach((_, id) => {
+  public stopAllAmbient(immediate: boolean = false) {
+    const ids = Array.from(this.ambientNodes.keys());
+    ids.forEach((id) => {
       this.setAmbient(id, false);
     });
+    if (immediate) {
+      this.ambientNodes.clear();
+      this.notifyListeners();
+    }
+  }
+
+  public stopAll(immediate: boolean = false) {
+    this.stopAllAmbient(immediate);
   }
 }
 

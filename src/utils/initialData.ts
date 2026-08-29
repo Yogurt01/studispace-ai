@@ -6,6 +6,7 @@ import {
   UserStats,
   Badge,
   CourseGrade,
+  StudyDocument,
 } from "../types";
 
 /**
@@ -511,3 +512,59 @@ export const INITIAL_COURSES: CourseGrade[] = [
     qualityPoints10: 20.0,
   },
 ];
+
+export const INITIAL_STUDY_DOCUMENTS: StudyDocument[] = [
+  {
+    id: "doc-1",
+    userId: GUEST_USER_ID,
+    title: "Data Structures: AVL Tree Self-Balancing & Rotation Algorithms",
+    fileName: "CS201_Lecture08_Trees_Graphs.pdf",
+    fileUrl: "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+    fileType: "application/pdf",
+    fileSize: 2450000, // 2.45 MB
+    uploadedAt: "2026-02-28T09:30:00.000Z",
+    courseTag: "CS 201",
+    category: "Lecture Slide",
+    pinned: true,
+  },
+  {
+    id: "doc-2",
+    userId: GUEST_USER_ID,
+    title: "Multivariable Calculus Midterm Formula & Reference Sheet",
+    fileName: "MATH240_Midterm_Formula_Sheet.pdf",
+    fileUrl: "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+    fileType: "application/pdf",
+    fileSize: 890000, // 890 KB
+    uploadedAt: "2026-02-25T14:15:00.000Z",
+    courseTag: "MATH 240",
+    category: "Exam Paper",
+    pinned: true,
+  },
+  {
+    id: "doc-3",
+    userId: GUEST_USER_ID,
+    title: "Operating Systems: Virtual Memory, Paging & TLB Hit Architecture",
+    fileName: "CS350_Chapter07_Memory_Management.pdf",
+    fileUrl: "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+    fileType: "application/pdf",
+    fileSize: 4120000, // 4.12 MB
+    uploadedAt: "2026-02-20T11:00:00.000Z",
+    courseTag: "CS 210",
+    category: "Textbook",
+    pinned: false,
+  },
+  {
+    id: "doc-4",
+    userId: GUEST_USER_ID,
+    title: "Software Engineering & Full-Stack Lab: Sprint Agile Syllabus",
+    fileName: "CS280_Spring2026_Syllabus.pdf",
+    fileUrl: "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+    fileType: "application/pdf",
+    fileSize: 520000, // 520 KB
+    uploadedAt: "2026-01-15T08:00:00.000Z",
+    courseTag: "CS 280",
+    category: "Syllabus",
+    pinned: false,
+  },
+];
+

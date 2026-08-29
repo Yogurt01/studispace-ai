@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Music,
   Volume2,
@@ -30,13 +30,13 @@ interface TrackState {
 }
 
 export const SoundscapesView: React.FC<SoundscapesViewProps> = ({ onAwardXp }) => {
-  const [tracks, setTracks] = useState<TrackState[]>([
+  const [tracks, setTracks] = useState<TrackState[]>(() => [
     {
       id: "rain",
       name: "Heavy Rain & Drops",
       icon: <CloudRain className="w-5 h-5 text-black" />,
       color: "#00F0FF",
-      isPlaying: false,
+      isPlaying: soundEngine.isTrackPlaying("rain"),
       volume: 0.5,
       desc: "Brown-filtered raindrop acoustics for deep steady immersion",
     },
@@ -45,7 +45,7 @@ export const SoundscapesView: React.FC<SoundscapesViewProps> = ({ onAwardXp }) =
       name: "40Hz Gamma / Alpha Wave",
       icon: <Waves className="w-5 h-5 text-black" />,
       color: "#FF66C4",
-      isPlaying: false,
+      isPlaying: soundEngine.isTrackPlaying("binaural"),
       volume: 0.4,
       desc: "Dual 200Hz + 240Hz binaural synthesis proven to lock attention",
     },
@@ -54,7 +54,7 @@ export const SoundscapesView: React.FC<SoundscapesViewProps> = ({ onAwardXp }) =
       name: "Lo-Fi Vinyl Crackle",
       icon: <Radio className="w-5 h-5 text-black" />,
       color: "#FFE600",
-      isPlaying: false,
+      isPlaying: soundEngine.isTrackPlaying("vinyl"),
       volume: 0.35,
       desc: "Warm analog vinyl needle texture with randomized impulses",
     },
@@ -63,7 +63,7 @@ export const SoundscapesView: React.FC<SoundscapesViewProps> = ({ onAwardXp }) =
       name: "White & Pink Noise",
       icon: <Sliders className="w-5 h-5 text-black" />,
       color: "#73EC8E",
-      isPlaying: false,
+      isPlaying: soundEngine.isTrackPlaying("whitenoise"),
       volume: 0.4,
       desc: "Uniform frequency masking to block background distractions",
     },
@@ -72,7 +72,7 @@ export const SoundscapesView: React.FC<SoundscapesViewProps> = ({ onAwardXp }) =
       name: "Tokyo Cafe Murmur",
       icon: <Coffee className="w-5 h-5 text-black" />,
       color: "#FFA94D",
-      isPlaying: false,
+      isPlaying: soundEngine.isTrackPlaying("cafe"),
       volume: 0.3,
       desc: "Warm low-frequency coffee shop ambient hum and resonance",
     },
@@ -81,11 +81,24 @@ export const SoundscapesView: React.FC<SoundscapesViewProps> = ({ onAwardXp }) =
       name: "Zen Forest Stream",
       icon: <TreePine className="w-5 h-5 text-black" />,
       color: "#C4B5FD",
-      isPlaying: false,
+      isPlaying: soundEngine.isTrackPlaying("stream"),
       volume: 0.4,
       desc: "Soothing natural mountain water currents & organic flow",
     },
   ]);
+
+  // Keep tracks in sync with any external audio engine changes
+  useEffect(() => {
+    const unsub = soundEngine.subscribe((_count, activeTracks) => {
+      setTracks((prev) =>
+        prev.map((t) => ({
+          ...t,
+          isPlaying: activeTracks.includes(t.id),
+        }))
+      );
+    });
+    return () => unsub();
+  }, []);
 
   const handleToggleTrack = (id: string) => {
     soundEngine.playChime("click");

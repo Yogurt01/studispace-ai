@@ -7,6 +7,7 @@ export type AppTab =
   | "quiz"
   | "assignments"
   | "gpa"
+  | "documents"
   | "soundscapes";
 
 export type Priority = "urgent" | "high" | "medium" | "chill";
@@ -29,6 +30,27 @@ export interface Assignment {
 }
 
 export type CourseCategory = "Core" | "Major Elective" | "Gen Ed" | "Lab" | "Honors";
+
+export interface ExtractedCourse {
+  courseCode: string;
+  courseName: string;
+  term: string;
+  credits: number;
+  grade?: string;
+  letterGrade?: string;
+  numericGrade?: number;
+  qualityPoints?: number;
+  category?: CourseCategory;
+}
+
+export interface TranscriptParseResponse {
+  institution?: string;
+  courses: ExtractedCourse[];
+  extractedCourses?: ExtractedCourse[];
+  confidenceScore?: number;
+  warning?: string;
+  simulated?: boolean;
+}
 
 export interface CourseGrade {
   id: string;
@@ -142,3 +164,21 @@ export interface Badge {
   unlocked: boolean;
   req: string;
 }
+
+export type DocumentCategory = "Textbook" | "Lecture Slide" | "Syllabus" | "Exam Paper" | "Other";
+
+export interface StudyDocument {
+  id: string;
+  userId: string;
+  title: string;
+  fileName: string;
+  fileUrl: string; // Firebase Storage download URL or blob URL
+  storagePath?: string; // Path in Firebase Storage for deletion
+  fileType: string; // e.g., 'application/pdf', 'image/png'
+  fileSize: number; // File size in bytes
+  uploadedAt: string; // ISO timestamp
+  courseTag?: string; // e.g., 'CS 201', 'Calculus II', 'General'
+  category: DocumentCategory;
+  pinned?: boolean;
+}
+

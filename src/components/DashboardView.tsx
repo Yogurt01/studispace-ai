@@ -17,6 +17,7 @@ import {
   ExternalLink,
   Check,
   GraduationCap,
+  FolderLock,
 } from "lucide-react";
 import {
   AppTab,
@@ -465,6 +466,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* Document Vault Quick Link */}
+          <div
+            onClick={() => onNavigate("documents")}
+            className="cursor-pointer bg-[#00F0FF] text-black border-2 border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:bg-[#68f5ff] active:translate-x-1 active:translate-y-1 active:shadow-none transition-all flex items-center justify-between"
+          >
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-white border-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
+                <FolderLock className="w-5 h-5 text-black" />
+              </div>
+              <div>
+                <h3 className="font-black text-sm uppercase text-black">Document Vault & Reader</h3>
+                <p className="text-xs font-bold text-black/80">
+                  PDF viewer, textbooks & exam papers
+                </p>
+              </div>
+            </div>
+            <ArrowRight className="w-4 h-4 text-black" />
           </div>
 
           {/* GPA & Transcript Quick Link */}
