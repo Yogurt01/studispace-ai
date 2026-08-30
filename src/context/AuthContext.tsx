@@ -17,7 +17,7 @@ import {
   updateDoc,
   onSnapshot,
 } from "firebase/firestore";
-import { auth, db, googleProvider, firebaseConfigError } from "../utils/firebase";
+import { auth, db, googleProvider, firebaseConfigError, isFirebaseConfigured } from "../utils/firebase";
 import { describeAuthError } from "../utils/authErrors";
 import { UserStats } from "../types";
 import { GUEST_USER_ID, INITIAL_STATS } from "../utils/initialData";
@@ -97,6 +97,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   // A redirect sign-in finishes on a fresh page load, so its failure cannot be
   // thrown back to whoever called signInWithGoogle. Surface it here instead.
   useEffect(() => {
+    // Nothing can come back from a redirect that was never possible to start,
+    // and asking with a placeholder key only logs an error about the key that
+    // buries the one about the configuration.
+    if (!isFirebaseConfigured) return;
+
     getRedirectResult(auth).catch((err) => {
       console.error("Google Redirect Sign In Error:", err);
       setRedirectError(describeAuthError(err));
@@ -176,7 +181,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     };
   }, []);
 
+  /**
+   * Every path below reaches a real Firebase project. When there is no project
+   * configured the SDK is holding a placeholder API key, so letting a request
+   * through would fail at the network with an error about the key rather than
+   * about the setup. Stop here and say the actual reason instead.
+   */
+  const requireFirebase = () => {
+    if (!isFirebaseConfigured) {
+      throw new Error(
+        firebaseConfigError ?? "Firebase is not configured, so signing in is unavailable."
+      );
+    }
+  };
+
   const signInWithGoogle = async () => {
+    requireFirebase();
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (err: any) {
@@ -191,6 +211,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const signInWithEmail = async (email: string, pass: string) => {
+    requireFirebase();
     try {
       await signInWithEmailAndPassword(auth, email, pass);
     } catch (err: any) {
@@ -208,6 +229,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     university?: string,
     year?: string
   ) => {
+    requireFirebase();
     signUpInFlight.current = true;
     try {
       const userCredential = await createUserWithEmailAndPassword(

@@ -268,6 +268,32 @@ credits**. Both figures are asserted in
 
 ---
 
+## 🔑 Running without a Firebase project
+
+Guest Scholar mode needs no Firebase project, and the app now starts without one.
+
+`getAuth()` throws `auth/invalid-api-key` **synchronously** when `apiKey` is blank — during
+module evaluation, not on the first sign-in. That took the whole app down at import time: a
+blank page, with the configuration error only in the console. So when the API key is missing,
+[`src/utils/firebaseConfig.ts`](src/utils/firebaseConfig.ts) hands the SDK a clearly-labelled
+placeholder. Auth constructs, `onAuthStateChanged` reports "signed out", the loading gate
+clears, and the login screen renders and explains what is missing.
+
+The placeholder is never mistaken for a working project:
+
+- `firebaseConfigError` names every missing `VITE_FIREBASE_*` variable and is shown on the
+  login screen, not just logged.
+- `isFirebaseConfigured` is `false`, and `AuthContext` refuses to start a sign-in rather than
+  sending a fake key to Google — so the student sees the configuration problem, not a network
+  error about the key.
+- A *wrong but present* key is never substituted. It reaches Firebase and fails with its own
+  specific error, which is more useful than pretending it was absent.
+
+Fill in `.env` when you need real accounts; until then the workspace, the Document Vault, and
+the GPA manager all work in Guest Scholar mode.
+
+---
+
 ## 🗄️ Document Vault storage
 
 | | Signed in | Guest Scholar |
@@ -371,6 +397,7 @@ StudiSpace is intentionally designed to feel like a **physical study desk transl
 │   │   ├── audioSynthesizer.ts # Web Audio ambient synth & chime generator
 │   │   ├── documentValidation.ts # Vault size/format rules, applied to every upload
 │   │   ├── firebase.ts         # Firebase client SDK initialization
+│   │   ├── firebaseConfig.ts   # Config resolution; keeps a missing key from blanking the app
 │   │   ├── firestoreService.ts # Real-time Firestore sync & Storage helpers
 │   │   ├── grading.ts          # Shared grade-point resolution & GPA arithmetic
 │   │   └── initialData.ts      # Seed data for guest/offline exploration

@@ -2,6 +2,7 @@ import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, browserLocalPersistence, setPersistence } from "firebase/auth";
 import { getFirestore, initializeFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
+import { FirebaseWebConfig, resolveFirebaseConfig } from "./firebaseConfig";
 
 // Firebase web config is public by design, but it must be *complete* and it must
 // point at the same project the Authorized Domains are configured on. It arrives
@@ -12,11 +13,15 @@ const runtimeConfig =
     .__STUDISPACE_RUNTIME_CONFIG__ ?? {};
 
 function readConfigValue(key: string): string {
-  const value = runtimeConfig[key] ?? (import.meta.env as Record<string, string | undefined>)[key];
+  const buildEnv = (import.meta.env ?? {}) as Record<string, string | undefined>;
+  const value = runtimeConfig[key] ?? buildEnv[key];
   return typeof value === "string" ? value.trim() : "";
 }
 
-const firebaseConfig = {
+export type { FirebaseWebConfig } from "./firebaseConfig";
+
+// Values as requested by the environment, before any placeholder is applied.
+const requestedConfig: FirebaseWebConfig = {
   apiKey: readConfigValue("VITE_FIREBASE_API_KEY"),
   authDomain: readConfigValue("VITE_FIREBASE_AUTH_DOMAIN"),
   projectId: readConfigValue("VITE_FIREBASE_PROJECT_ID"),
@@ -25,21 +30,13 @@ const firebaseConfig = {
   appId: readConfigValue("VITE_FIREBASE_APP_ID"),
 };
 
-// Initializing with blank values yields confusing downstream failures
-// (auth/invalid-api-key, or silent Firestore permission errors), so name the
-// exact variables that are missing instead. This is reported rather than thrown:
-// a hard throw here runs during module evaluation and would blank the whole app,
-// including Guest Scholar mode, which needs no Firebase config at all.
-const REQUIRED_CONFIG_KEYS = ["apiKey", "authDomain", "projectId", "appId"] as const;
-const missingKeys = REQUIRED_CONFIG_KEYS.filter((key) => !firebaseConfig[key]);
+const resolved = resolveFirebaseConfig(requestedConfig);
+const firebaseConfig = resolved.config;
 
-export const firebaseConfigError: string | null =
-  missingKeys.length > 0
-    ? `Firebase client configuration is incomplete. Missing: ${missingKeys
-        .map((key) => `VITE_FIREBASE_${key.replace(/([A-Z])/g, "_$1").toUpperCase()}`)
-        .join(", ")}. Copy .env.example to .env and fill in the values from ` +
-      `Firebase Console → Project settings → Your apps.`
-    : null;
+export const firebaseConfigError: string | null = resolved.error;
+
+/** True when this build can actually talk to a Firebase project. */
+export const isFirebaseConfigured = firebaseConfigError === null;
 
 if (firebaseConfigError) {
   console.error(firebaseConfigError);
@@ -49,6 +46,7 @@ if (firebaseConfigError) {
 // than projectId, popups redirect to the wrong project and sign-in fails in ways
 // that look like a domain problem, so surface the mismatch up front.
 if (
+  isFirebaseConfigured &&
   firebaseConfig.authDomain.endsWith(".firebaseapp.com") &&
   firebaseConfig.authDomain.split(".")[0] !== firebaseConfig.projectId
 ) {
@@ -85,15 +83,20 @@ export const db = createFirestore();
 // Initialize Storage
 export const storage = getStorage(app);
 
-// Initialize Auth
+// Initialize Auth. Safe against a missing apiKey because resolveFirebaseConfig
+// substituted a placeholder for it; see the comment there for why that matters.
 export const auth = getAuth(app);
 
 // Keep the session across reloads and new tabs. This is the SDK default for the
 // browser, but setting it explicitly means a refresh cannot silently drop the
-// student's session if the default ever changes.
-void setPersistence(auth, browserLocalPersistence).catch((err) => {
-  console.error("Could not enable persistent auth sessions:", err);
-});
+// student's session if the default ever changes. There is no session to persist
+// when the project is unconfigured, so skip it rather than log a second error
+// that only restates firebaseConfigError.
+if (isFirebaseConfigured) {
+  void setPersistence(auth, browserLocalPersistence).catch((err) => {
+    console.error("Could not enable persistent auth sessions:", err);
+  });
+}
 
 export const googleProvider = new GoogleAuthProvider();
 // Always let the student pick an account rather than silently reusing the one
@@ -119,7 +122,12 @@ export function isLikelyAuthorizedHost(hostname: string): boolean {
   return false;
 }
 
-if (typeof window !== "undefined" && import.meta.env.DEV && !isLikelyAuthorizedHost(window.location.hostname)) {
+if (
+  isFirebaseConfigured &&
+  typeof window !== "undefined" &&
+  import.meta.env.DEV &&
+  !isLikelyAuthorizedHost(window.location.hostname)
+) {
   console.warn(
     `StudiSpace is running on "${window.location.hostname}", which is probably not in this Firebase project's ` +
       `Authorized Domains. Google sign-in will fail with auth/unauthorized-domain. ` +

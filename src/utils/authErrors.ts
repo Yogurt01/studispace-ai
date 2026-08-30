@@ -23,6 +23,8 @@ const AUTH_ERROR_MESSAGES: Record<string, string> = {
   "auth/user-disabled": "This account has been disabled. Contact support.",
   "auth/missing-password": "Please enter your password.",
   "auth/invalid-api-key": "The Firebase API key is invalid. Check VITE_FIREBASE_API_KEY.",
+  // Identity Toolkit rejects a well-formed but wrong key with this newer code.
+  "auth/api-key-not-valid": "The Firebase API key is invalid. Check VITE_FIREBASE_API_KEY.",
   "auth/account-exists-with-different-credential":
     "This email is already registered with a different sign-in method. Try that method instead.",
 };
