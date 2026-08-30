@@ -31,3 +31,6 @@ blob-report/
 # run `npm ci` against package-lock.json. A stray `bun install` drops bun.lock
 # here and deletes package-lock.json with it, which breaks every one of them.
 bun.lock
+
+# Test fixtures
+material_for_test/
