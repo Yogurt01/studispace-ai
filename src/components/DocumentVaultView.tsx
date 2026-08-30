@@ -193,13 +193,18 @@ export const DocumentVaultView: React.FC<DocumentVaultViewProps> = ({
       return;
     }
 
+    // Held outside the try so a failed upload cannot leave the ticker running.
+    // onUploadDocument reports an unpersistable document by throwing, and that
+    // path skipped clearInterval entirely.
+    let progressTimer: ReturnType<typeof setInterval> | undefined;
+
     try {
       setIsUploading(true);
       setUploadError(null);
       setUploadProgress(30);
 
       // Simulate step progression
-      const progressTimer = setInterval(() => {
+      progressTimer = setInterval(() => {
         setUploadProgress((prev) => (prev < 85 ? prev + 15 : prev));
       }, 200);
 
@@ -210,7 +215,6 @@ export const DocumentVaultView: React.FC<DocumentVaultViewProps> = ({
         pinned: false,
       });
 
-      clearInterval(progressTimer);
       setUploadProgress(100);
 
       soundEngine.playChime("levelup");
@@ -228,7 +232,12 @@ export const DocumentVaultView: React.FC<DocumentVaultViewProps> = ({
     } catch (err: any) {
       console.error("Upload error:", err);
       setIsUploading(false);
-      setUploadError(err.message || "Failed to upload document. Please try again.");
+      // The drawer stays open on the error so the student can retry; leaving the
+      // bar parked at 85% would read as an upload still in flight.
+      setUploadProgress(0);
+      setUploadError(err?.message || "Failed to upload document. Please try again.");
+    } finally {
+      if (progressTimer) clearInterval(progressTimer);
     }
   };
 
