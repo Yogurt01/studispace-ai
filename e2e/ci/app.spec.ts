@@ -82,7 +82,7 @@ test("a wrong developer password is refused and yields no token", async ({ reque
 test("the unauthenticated visitor lands on the login screen", async ({ page }) => {
   await page.goto("/");
   // Auth state must resolve; the app must not hang on its loading gate.
-  await expect(page.getByRole("button", { name: /Instant Demo Mode/i })).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator("#btn-guest-entry-header")).toBeVisible({ timeout: 30_000 });
   await expect(page.locator("#tab-auth-signin")).toBeVisible();
   await expect(page.locator("#tab-auth-signup")).toBeVisible();
 });
@@ -116,7 +116,7 @@ test("an invalid email is blocked by the form before submission", async ({ page 
 
 test("guest mode reaches the authenticated shell and opens Socrates AI", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: /Instant Demo Mode/i }).click();
+  await page.locator("#btn-guest-entry-header").click();
   await expect(page.locator("#nav-tab-socrates_ai")).toBeVisible({ timeout: 30_000 });
   await page.locator("#nav-tab-socrates_ai").click();
   await expect(page.locator("#btn-chat-send")).toBeVisible();
@@ -144,7 +144,7 @@ function stubModels(page: import("@playwright/test").Page, overrides: Record<str
 
 async function openSocrates(page: import("@playwright/test").Page) {
   await page.goto("/");
-  await page.getByRole("button", { name: /Instant Demo Mode/i }).click();
+  await page.locator("#btn-guest-entry-header").click();
   await page.locator("#nav-tab-socrates_ai").click();
   await expect(page.locator("#btn-chat-send")).toBeVisible();
 }
