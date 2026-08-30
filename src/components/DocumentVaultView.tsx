@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useRef } from "react";
 import {
+  AlertCircle,
   FolderLock,
   UploadCloud,
   Search,
@@ -29,11 +30,16 @@ import {
 import { StudyDocument, DocumentCategory, CourseGrade } from "../types";
 import { soundEngine } from "../utils/audioSynthesizer";
 import { ACCEPTED_FILE_INPUT, validateDocumentFile } from "../utils/documentValidation";
+import { isStorageUnavailable, storageKnownUnavailable } from "../utils/firestoreService";
 import { DocumentViewerModal } from "./DocumentViewerModal";
 
 interface DocumentVaultViewProps {
   documents: StudyDocument[];
-  onUploadDocument: (file: File, metadata?: Partial<StudyDocument>) => Promise<StudyDocument>;
+  onUploadDocument: (
+    file: File,
+    metadata?: Partial<StudyDocument>,
+    onProgress?: (percent: number) => void
+  ) => Promise<StudyDocument>;
   onDeleteDocument: (id: string, storagePath?: string) => Promise<void>;
   onTogglePinDocument: (id: string, pinned: boolean) => Promise<void>;
   onAwardXp: (amount: number) => void;
@@ -88,6 +94,10 @@ export const DocumentVaultView: React.FC<DocumentVaultViewProps> = ({
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  // Set when Cloud Storage is not provisioned for the project. The vault stays
+  // fully usable — reading, filtering, opening seeded documents — so this is a
+  // banner about one capability, not an error state for the whole view.
+  const [storageUnavailable, setStorageUnavailable] = useState(storageKnownUnavailable());
 
   // Delete Confirmation state
   const [docToDelete, setDocToDelete] = useState<StudyDocument | null>(null);
@@ -210,27 +220,24 @@ export const DocumentVaultView: React.FC<DocumentVaultViewProps> = ({
       return;
     }
 
-    // Held outside the try so a failed upload cannot leave the ticker running.
-    // onUploadDocument reports an unpersistable document by throwing, and that
-    // path skipped clearInterval entirely.
-    let progressTimer: ReturnType<typeof setInterval> | undefined;
-
     try {
       setIsUploading(true);
       setUploadError(null);
-      setUploadProgress(30);
+      setUploadProgress(0);
 
-      // Simulate step progression
-      progressTimer = setInterval(() => {
-        setUploadProgress((prev) => (prev < 85 ? prev + 15 : prev));
-      }, 200);
-
-      await onUploadDocument(uploadFile, {
-        title: uploadTitle.trim() || uploadFile.name,
-        category: uploadCategory,
-        courseTag: uploadCourseTag.trim() || "General",
-        pinned: false,
-      });
+      // Real transfer progress. This used to be a setInterval that climbed to
+      // 85% and stopped, at the same speed for a 2KB note as for a 16MB
+      // textbook — so a large upload looked identical to a hung one.
+      await onUploadDocument(
+        uploadFile,
+        {
+          title: uploadTitle.trim() || uploadFile.name,
+          category: uploadCategory,
+          courseTag: uploadCourseTag.trim() || "General",
+          pinned: false,
+        },
+        (percent) => setUploadProgress(percent)
+      );
 
       setUploadProgress(100);
 
@@ -252,9 +259,8 @@ export const DocumentVaultView: React.FC<DocumentVaultViewProps> = ({
       // The drawer stays open on the error so the student can retry; leaving the
       // bar parked at 85% would read as an upload still in flight.
       setUploadProgress(0);
+      if (isStorageUnavailable(err)) setStorageUnavailable(true);
       setUploadError(err?.message || "Failed to upload document. Please try again.");
-    } finally {
-      if (progressTimer) clearInterval(progressTimer);
     }
   };
 
@@ -308,6 +314,31 @@ export const DocumentVaultView: React.FC<DocumentVaultViewProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Cloud Storage is a provisioned Firebase resource, not something this
+            app can create. When the project has none, saying so once here is
+            better than letting every upload discover it separately — and the
+            rest of the vault keeps working, so this is a notice, not an error. */}
+        {storageUnavailable && (
+          <div
+            id="vault-storage-unavailable-notice"
+            role="status"
+            className="mt-5 bg-[#FFE600] border-2 border-black p-3 sm:p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] flex items-start gap-3"
+          >
+            <AlertCircle className="w-5 h-5 text-black shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-black text-xs sm:text-sm uppercase text-black">
+                Cloud uploads are unavailable
+              </p>
+              <p className="text-xs font-bold text-black/80">
+                Cloud Storage is not enabled for this Firebase project, so new files cannot be
+                stored. Enable Storage in the Firebase Console and check that
+                VITE_FIREBASE_STORAGE_BUCKET names an existing bucket. Reading, searching, and
+                opening the documents already in your vault all keep working.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Quick Storage & Inventory Metric Strip */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-5 pt-4 border-t-2 border-black/20">
@@ -791,6 +822,7 @@ export const DocumentVaultView: React.FC<DocumentVaultViewProps> = ({
               >
                 <input
                   ref={fileInputRef}
+                  id="input-vault-file"
                   type="file"
                   accept={ACCEPTED_FILE_INPUT}
                   onChange={handleFileSelect}
@@ -900,6 +932,7 @@ export const DocumentVaultView: React.FC<DocumentVaultViewProps> = ({
               <div className="flex items-center justify-end gap-3 pt-3 border-t-2 border-black">
                 <button
                   type="button"
+                  id="btn-vault-cancel-upload"
                   disabled={isUploading}
                   onClick={() => setIsUploadDrawerOpen(false)}
                   className="px-4 py-2 bg-white hover:bg-gray-100 border-2 border-black font-black text-xs uppercase shadow-[2px_2px_0px_#000]"
@@ -908,6 +941,7 @@ export const DocumentVaultView: React.FC<DocumentVaultViewProps> = ({
                 </button>
                 <button
                   type="submit"
+                  id="btn-vault-save-document"
                   disabled={isUploading || !uploadFile}
                   className="px-5 py-2 bg-[#FFE600] hover:bg-[#fff04d] disabled:opacity-50 border-2 border-black font-black text-xs uppercase shadow-[3px_3px_0px_#000] active:translate-x-0.5 active:translate-y-0.5 flex items-center gap-1.5 cursor-pointer"
                 >

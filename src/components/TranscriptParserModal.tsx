@@ -42,6 +42,9 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
   const [transcriptText, setTranscriptText] = useState("");
   const [isParsing, setIsParsing] = useState(false);
   const [detectedInstitution, setDetectedInstitution] = useState<string>("");
+  // Which engine actually answered. The two do not read equally well, so the
+  // student is told which one produced the rows they are about to import.
+  const [engineUsed, setEngineUsed] = useState<TranscriptEngine | null>(null);
   const [warningMessage, setWarningMessage] = useState<string | null>(null);
   const [extractedCourses, setExtractedCourses] = useState<CourseGrade[]>([]);
   const [parseError, setParseError] = useState<string | null>(null);
@@ -55,6 +58,7 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
   const handleFileProcess = (file: File) => {
     setParseError(null);
     setWarningMessage(null);
+    setEngineUsed(null);
     setSelectedFile(file);
     setFileMimeType(file.type || "image/png");
 
@@ -111,12 +115,15 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
     setBase64Data(null);
     setParseError(null);
     setWarningMessage(null);
+    setEngineUsed(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
   };
 
-  const handleParseWithGemini = async () => {
+  // Named for what it does, not for which engine answers: the server picks
+  // Gemini or the local OCR fallback per request and reports which it used.
+  const handleExtractCourses = async () => {
     if (!base64Data && !transcriptText.trim()) {
       setParseError("Please select an image/document or enter transcript text.");
       return;
@@ -125,6 +132,7 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
     setIsParsing(true);
     setParseError(null);
     setWarningMessage(null);
+    setEngineUsed(null);
     soundEngine.playChime("click");
 
     try {
@@ -164,6 +172,9 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
       } else {
         if (data.institution) {
           setDetectedInstitution(data.institution);
+        }
+        if (data.engine) {
+          setEngineUsed(data.engine as TranscriptEngine);
         }
         if (data.warning) {
           setWarningMessage(data.warning);
@@ -211,8 +222,8 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
         soundEngine.playChime("success");
       }
     } catch (err: any) {
-      console.error("Gemini Multimodal Transcript error:", err);
-      setParseError(err.message || "Failed to process transcript with Gemini OCR");
+      console.error("Transcript extraction error:", err);
+      setParseError(err.message || "Failed to extract courses from this transcript");
       soundEngine.playChime("click");
     } finally {
       setIsParsing(false);
@@ -317,7 +328,7 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
                 AI Multimodal Transcript Parser
               </h2>
               <p className="text-[11px] font-bold text-black/80">
-                Visual OCR & Document Extractor powered by Google Gemini
+                Visual OCR & Document Extractor — Google Gemini, with local OCR as a fallback
               </p>
             </div>
           </div>
@@ -388,6 +399,7 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
                     }`}
                   >
                     <input
+                      id="input-transcript-file"
                       type="file"
                       ref={fileInputRef}
                       onChange={(e) => {
@@ -463,7 +475,7 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
                             </span>
                           </div>
                           <p className="text-xs font-bold text-gray-600 mt-0.5">
-                            Size: {(selectedFile.size / 1024).toFixed(1)} KB &bull; Ready for Gemini Vision OCR
+                            Size: {(selectedFile.size / 1024).toFixed(1)} KB &bull; Ready to extract
                           </p>
                           {previewUrl && (
                             <button
@@ -531,7 +543,7 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
             <div className="pt-2">
               <button
                 type="button"
-                onClick={handleParseWithGemini}
+                onClick={handleExtractCourses}
                 disabled={isParsing || (!base64Data && !transcriptText.trim())}
                 id="btn-parse-multimodal-transcript"
                 className="w-full py-3.5 bg-[#73EC8E] border-2 border-black font-black text-sm uppercase shadow-[4px_4px_0px_#000] hover:bg-[#5de07b] active:translate-x-0.5 active:translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
@@ -539,12 +551,12 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
                 {isParsing ? (
                   <>
                     <RefreshCw className="w-5 h-5 animate-spin" />
-                    <span>Gemini Vision OCR in Progress...</span>
+                    <span>Extracting Courses...</span>
                   </>
                 ) : (
                   <>
                     <Sparkles className="w-5 h-5" />
-                    <span>Run Gemini AI Visual OCR & Extract Courses</span>
+                    <span>Extract Courses with AI / OCR</span>
                   </>
                 )}
               </button>
@@ -585,6 +597,21 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
                       <span>
                         Detected University / School:{" "}
                         <strong className="text-black font-black">{detectedInstitution}</strong>
+                      </span>
+                    </div>
+                  )}
+                  {engineUsed && (
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-gray-700 mt-1">
+                      <Zap className="w-3.5 h-3.5 text-black" />
+                      <span>
+                        Extracted by:{" "}
+                        <strong className="text-black font-black">
+                          {engineUsed === "gemini"
+                            ? "Google Gemini Vision"
+                            : engineUsed === "ocr-fallback"
+                            ? "Local OCR fallback — check every row"
+                            : "Local text parser — check every row"}
+                        </strong>
                       </span>
                     </div>
                   )}
@@ -798,7 +825,7 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
         <div className="p-4 bg-[#F4F4F0] border-t-2 border-black flex items-center justify-between">
           <span className="text-[11px] font-bold text-gray-600 flex items-center gap-1">
             <Zap className="w-3.5 h-3.5 text-[#FF4B4B]" />
-            Encrypted client-to-server Gemini Multimodal processing
+            Encrypted client-to-server processing
           </span>
           <button
             type="button"

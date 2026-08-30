@@ -10,7 +10,7 @@ import {
   onSnapshot,
   writeBatch,
 } from "firebase/firestore";
-import { ref, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
+import { ref, uploadBytes, uploadBytesResumable, getDownloadURL, deleteObject } from "firebase/storage";
 import { db, storage } from "./firebase";
 import {
   ChatMessage,
@@ -93,10 +93,111 @@ export async function uploadDocumentToFirebaseStorage(
   }
 }
 
+/**
+ * A stall that never moved a single byte is a different problem from one that
+ * stopped halfway, and the difference is worth telling the student.
+ *
+ * Nothing at all transferred means the upload session could not even be opened.
+ * By far the most common reason is that Cloud Storage has never been enabled for
+ * the Firebase project, so the bucket in VITE_FIREBASE_STORAGE_BUCKET does not
+ * exist: the browser gets no response to preflight and reports no status, which
+ * looks exactly like a dead connection but is not one.
+ */
+/**
+ * Raised when the Storage bucket itself appears not to exist.
+ *
+ * Distinct from an ordinary upload failure because the remedy is different and
+ * the whole app should not keep pretending cloud uploads are available: nothing
+ * transfers, no HTTP status ever comes back, and the fix is provisioning rather
+ * than retrying. The UI keys its banner off this type.
+ */
+export class StorageUnavailableError extends Error {
+  readonly storageUnavailable = true;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "StorageUnavailableError";
+  }
+}
+
+export function isStorageUnavailable(err: unknown): boolean {
+  return Boolean(err && typeof err === "object" && (err as any).storageUnavailable === true);
+}
+
+/**
+ * Once the bucket has failed to answer, it will not start answering three
+ * seconds later. Remembering that turns every later upload in the session into
+ * an immediate, honest refusal instead of another 45-second wait.
+ */
+let storageLooksUnavailable = false;
+
+/** Exposed so the Vault can show its banner before a student tries again. */
+export function storageKnownUnavailable(): boolean {
+  return storageLooksUnavailable;
+}
+
+/** Cleared when an upload does succeed, so a transient outage is not remembered forever. */
+function markStorageReachable(): void {
+  storageLooksUnavailable = false;
+}
+
+const STORAGE_UNPROVISIONED_MESSAGE =
+  "Cloud Storage is not enabled for this Firebase project, so files cannot be stored. " +
+  "Enable Storage in the Firebase Console and confirm VITE_FIREBASE_STORAGE_BUCKET names an " +
+  "existing bucket. Everything else in your workspace keeps working.";
+
+function describeStall(fileName: string, movedAnyBytes: boolean): Error {
+  const seconds = Math.round(UPLOAD_STALL_TIMEOUT_MS / 1000);
+
+  if (movedAnyBytes) {
+    return new Error(
+      `The upload of "${fileName}" stopped part way through and did not resume within ${seconds}s. Check your connection and try again.`
+    );
+  }
+
+  storageLooksUnavailable = true;
+  return new StorageUnavailableError(
+    `"${fileName}" could not start uploading: the storage service did not respond within ${seconds}s. ` +
+      STORAGE_UNPROVISIONED_MESSAGE
+  );
+}
+
+/** Rejects if `promise` has not settled in time, so a hung call cannot wait forever. */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
+}
+
+/**
+ * A transfer that has stopped moving bytes for this long is not slow, it is
+ * stuck. A total time limit would be wrong — a large textbook on a slow
+ * connection is legitimate and can take minutes — so the guard is on progress,
+ * not on duration.
+ */
+const UPLOAD_STALL_TIMEOUT_MS = 45_000;
+
+/**
+ * Firestore queues writes while it believes it is offline, so setDoc can stay
+ * pending indefinitely instead of rejecting. The bytes are already in Storage by
+ * then, so the student needs an answer rather than a spinner.
+ */
+const METADATA_WRITE_TIMEOUT_MS = 20_000;
+
+export interface UploadProgress {
+  /** 0-100, from bytes actually transferred. */
+  percent: number;
+  bytesTransferred: number;
+  totalBytes: number;
+}
+
 export async function uploadStudyDocument(
   userId: string,
   file: File,
-  metadata?: Partial<StudyDocument>
+  metadata?: Partial<StudyDocument>,
+  onProgress?: (progress: UploadProgress) => void
 ): Promise<StudyDocument> {
   const timestamp = Date.now();
   const docId = `doc-${timestamp}`;
@@ -139,6 +240,14 @@ export async function uploadStudyDocument(
     return { ...persisted, fileUrl: objectUrl };
   }
 
+  // A bucket that did not answer a moment ago will not answer now. Refusing up
+  // front keeps the student from sitting through the stall timeout again.
+  if (storageLooksUnavailable) {
+    throw new StorageUnavailableError(
+      `"${file.name}" cannot be stored right now. ${STORAGE_UNPROVISIONED_MESSAGE}`
+    );
+  }
+
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const storagePath = `users/${userId}/documents/${timestamp}_${safeName}`;
   const storageRef = ref(storage, storagePath);
@@ -147,11 +256,57 @@ export async function uploadStudyDocument(
   // really reach Storage. There is no blob: fallback here on purpose: it would
   // put a URL into Firestore that is broken the moment the tab closes, and sync
   // that broken record to every other device.
+  //
+  // uploadBytes() is a single shot with no progress events and no way to give
+  // up: a 16MB textbook reported nothing until it finished, and a stalled
+  // connection simply never settled. uploadBytesResumable reports real byte
+  // progress and can be cancelled, which is what makes both fixable.
   let fileUrl: string;
   try {
-    const uploadResult = await uploadBytes(storageRef, file);
-    fileUrl = await getDownloadURL(uploadResult.ref);
+    fileUrl = await new Promise<string>((resolve, reject) => {
+      const task = uploadBytesResumable(storageRef, file, {
+        contentType: file.type || "application/octet-stream",
+      });
+
+      let lastMovedAt = Date.now();
+      let movedAnyBytes = false;
+      const stallCheck = setInterval(() => {
+        if (Date.now() - lastMovedAt < UPLOAD_STALL_TIMEOUT_MS) return;
+        clearInterval(stallCheck);
+        // cancel() makes the task emit its own error, which the observer below
+        // turns into the rejection. Reject here too in case it does not.
+        task.cancel();
+        reject(describeStall(file.name, movedAnyBytes));
+      }, 5_000);
+
+      task.on(
+        "state_changed",
+        (snapshot) => {
+          lastMovedAt = Date.now();
+          if (snapshot.bytesTransferred > 0) movedAnyBytes = true;
+          onProgress?.({
+            percent: snapshot.totalBytes
+              ? Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100)
+              : 0,
+            bytesTransferred: snapshot.bytesTransferred,
+            totalBytes: snapshot.totalBytes,
+          });
+        },
+        (err) => {
+          clearInterval(stallCheck);
+          reject(err);
+        },
+        () => {
+          clearInterval(stallCheck);
+          markStorageReachable();
+          getDownloadURL(task.snapshot.ref).then(resolve, reject);
+        }
+      );
+    });
   } catch (err: any) {
+    // Re-throw the unprovisioned-storage case as-is: wrapping it would hide the
+    // type the Vault uses to tell "set this up" apart from "try again".
+    if (isStorageUnavailable(err)) throw err;
     throw new Error(
       `Could not upload "${file.name}" to your vault: ${err?.message || "Firebase Storage is unreachable."}`
     );
@@ -160,7 +315,11 @@ export async function uploadStudyDocument(
   const newDoc: StudyDocument = { ...base, userId, fileUrl, storagePath };
 
   try {
-    await setDoc(doc(db, "documents", docId), newDoc);
+    await withTimeout(
+      setDoc(doc(db, "documents", docId), newDoc),
+      METADATA_WRITE_TIMEOUT_MS,
+      "Saving the document details timed out. The file uploaded, but your vault could not record it."
+    );
   } catch (firestoreErr: any) {
     // The file is in Storage but nothing points at it. Drop it rather than
     // leaving an orphan the student is billed for and can never see.

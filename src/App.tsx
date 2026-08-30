@@ -237,9 +237,15 @@ export default function App() {
 
   const handleUploadDocument = async (
     file: File,
-    metadata?: Partial<StudyDocument>
+    metadata?: Partial<StudyDocument>,
+    onProgress?: (percent: number) => void
   ): Promise<StudyDocument> => {
-    const uploaded = await uploadStudyDocument(user?.uid || "guest", file, metadata);
+    const uploaded = await uploadStudyDocument(
+      user?.uid || "guest",
+      file,
+      metadata,
+      onProgress ? (progress) => onProgress(progress.percent) : undefined
+    );
     setDocuments((prev) => [uploaded, ...prev]);
     showToast(`Uploaded "${uploaded.title}" to Vault`);
     return uploaded;

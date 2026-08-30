@@ -97,8 +97,17 @@ test("signs in, gets a real Qwen3 answer, follows up in context, and survives a 
   await page.reload();
   await expect(page.locator("#nav-tab-socrates_ai")).toBeVisible({ timeout: 45_000 });
   await page.locator("#nav-tab-socrates_ai").click();
-  await expect(page.getByText("What is binary search?")).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("Why is its time complexity O(log n)?")).toBeVisible();
+  // exact: true matches the student's own message and nothing else. Without it
+  // the assertion is at the mercy of the model's wording: a reply that quotes
+  // the question back ("**What is binary search?** Let's explore…") makes the
+  // locator resolve to two elements and fail on strict mode, which says nothing
+  // about whether the conversation survived the reload.
+  await expect(page.getByText("What is binary search?", { exact: true })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(
+    page.getByText("Why is its time complexity O(log n)?", { exact: true })
+  ).toBeVisible();
 });
 
 test("a failed turn leaves no fabricated assistant message behind after reload", async ({ page }) => {

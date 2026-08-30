@@ -14,6 +14,64 @@
 - **Google Sheets Export**: One-click generation of formatted `.csv` reports with question breakdowns and mastery percentages.
 - **AI Quiz Generator**: Generate custom quizzes by topic and difficulty (`Easy`, `Medium`, `Hard`, `Genius`).
 
+## 💸 Running StudiSpace for free
+
+StudiSpace is designed to run end to end at **zero cost**, on Firebase's free
+**Spark** plan plus an entirely open-source local stack. Nothing below needs a
+credit card.
+
+| Capability | Free-tier path | Cost |
+| --- | --- | --- |
+| Accounts and sign-in | Firebase Authentication (Spark) | Free |
+| Notes, decks, quizzes, assignments, GPA records | Cloud Firestore (Spark) | Free |
+| AI tutoring | **Ollama + Qwen3 (`qwen3:4b`)** on your own machine | Free, no API key |
+| AI tutoring (hosted) | Gemini `gemini-2.5-flash` free tier | Free within quota |
+| Transcript → GPA parsing | **Tesseract OCR + the local table parser** | Free, no API key, no quota |
+| Guest Scholar mode | Entirely local, no Firebase project at all | Free |
+
+Two of these deserve emphasis, because they are what keep the app usable when a
+paid service is unavailable rather than merely cheap:
+
+- **Transcript parsing never requires Gemini.** If the key is missing, the
+  endpoint is unreachable, or the quota returns `429 RESOURCE_EXHAUSTED`, the
+  request falls through to Tesseract plus the deterministic table parser and
+  still returns courses. See [Transcript parsing engines](#-transcript-parsing-engines).
+- **Tutoring never requires a hosted model.** Point `AI_PROVIDERS` at Ollama and
+  the Socratic tutor runs against Qwen3 on your own hardware.
+
+### The one exception: Document Vault file storage
+
+**Persisting uploaded files requires Firebase Cloud Storage to be provisioned**,
+and provisioning a Storage bucket can require the **Blaze** (pay-as-you-go) plan
+depending on when your project was created. This is the single feature that a
+pure Spark-plan project may not be able to use.
+
+It fails *gracefully*, not silently. With no bucket, the upload attempt gets no
+response at all — no HTTP status ever comes back — so the vault stops waiting,
+names the cause in an in-app notice, and leaves everything else running:
+
+> **Cloud uploads are unavailable** — Cloud Storage is not enabled for this
+> Firebase project, so new files cannot be stored. Enable Storage in the Firebase
+> Console and check that `VITE_FIREBASE_STORAGE_BUCKET` names an existing bucket.
+> Reading, searching, and opening the documents already in your vault all keep
+> working.
+
+Concretely, when Storage is unprovisioned:
+
+- The workspace, GPA manager, transcript parser, tutor, notes, decks and quizzes
+  are **unaffected** — Firestore is a separate service and stays on the free tier.
+- The Document Vault still opens, lists, searches, filters and reads the
+  documents already in it.
+- Only *new* file uploads are refused, once, with the notice above. Later
+  attempts in the same session are refused immediately rather than repeating the
+  45-second wait.
+
+To enable it: Firebase Console → Build → Storage → Get started, then set
+`VITE_FIREBASE_STORAGE_BUCKET` to the bucket it creates. See
+[Document Vault storage](#-document-vault-storage).
+
+---
+
 ### 📅 Planner, Assignments & Google Calendar Sync
 - **Academic Kanban Board**: Filter tasks by status (`To-Do`, `In Progress`, `Done`), subject, priority, and course weight.
 - **Google Calendar Sync**: Formats target grades, Pomodoro estimates, and deadlines into 1-click Google Calendar study blocks.
@@ -32,6 +90,7 @@
 - **Search, filter, and sort** by title, category, course tag, upload date, or file size.
 - **Straight into study**: send any document to the Socratic tutor as context, or turn it into a flashcard deck.
 - **Storage**: signed-in students get Firebase Storage with metadata in Firestore. Guest Scholars get a session-local vault — see [Document Vault storage](#-document-vault-storage) for what that does and does not keep.
+- **Requires a provisioned Storage bucket**, which may need the Firebase Blaze plan. Without one the vault degrades to read-only with an in-app notice and the rest of the workspace is unaffected — see [Running StudiSpace for free](#-running-studispace-for-free).
 
 ---
 
@@ -43,7 +102,10 @@ For the complete, standalone setup and troubleshooting guide, see [docs/LOCAL_DE
 - Node.js 22 or newer
 - npm
 - A Google AI Studio API key for Gemini (optional if you only use the local Qwen3 provider)
-- A Firebase project with Authentication, Firestore, and Storage enabled
+- A Firebase project with Authentication and Firestore enabled (both free on the Spark plan)
+- Optionally, Firebase Cloud Storage — needed only to store Document Vault uploads, and it may
+  require the Blaze plan; everything else works without it (see
+  [Running StudiSpace for free](#-running-studispace-for-free))
 
 > The project dependencies require Node 22+; the container and CI use Node 22. Using Node 18 cannot load the Tailwind native binding.
 
@@ -314,6 +376,30 @@ instead of an empty viewer.
 
 Firestore is initialised with `ignoreUndefinedProperties`, so one absent optional field can no
 longer reject an entire document write.
+
+### When there is no Storage bucket
+
+Cloud Storage is a resource the Firebase project must have provisioned; the app cannot create
+one, and a Spark-plan project may not have it (see
+[Running StudiSpace for free](#-running-studispace-for-free)).
+
+This failure has an unusual shape and the handling is built around it: with no bucket, the
+upload request gets **no HTTP response at all** — the browser records status `-1` after the
+SDK's retries — so there is nothing to read an error code from and the transfer never moves a
+byte. Uploads are therefore watched for *progress* rather than given a deadline:
+
+- A transfer that has moved **no bytes** for 45s is reported as unprovisioned Storage, naming
+  the console step and the `VITE_FIREBASE_STORAGE_BUCKET` variable.
+- A transfer that started and then **stalled** is reported as a connection problem, because
+  that is what it is.
+- A total time limit is deliberately not used: a large textbook on a slow connection is
+  legitimate and can take minutes.
+
+The first refusal sets a session flag, so later uploads are refused immediately instead of
+repeating the wait, and a successful upload clears it again. The Vault shows the notice as a
+banner (`#vault-storage-unavailable-notice`) and stays fully usable for everything that does
+not need the bucket. `e2e/local/vault-and-transcript.spec.ts` asserts both branches: files
+stored and readable when Storage exists, the banner plus a working workspace when it does not.
 
 ---
 
