@@ -26,3 +26,8 @@ service-account*.json
 playwright-report/
 test-results/
 blob-report/
+
+# This project builds with npm: CI, the Dockerfile and the deploy pipeline all
+# run `npm ci` against package-lock.json. A stray `bun install` drops bun.lock
+# here and deletes package-lock.json with it, which breaks every one of them.
+bun.lock

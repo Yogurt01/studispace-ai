@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, browserLocalPersistence, setPersistence } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { getFirestore, initializeFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 
 // Firebase web config is public by design, but it must be *complete* and it must
@@ -61,8 +61,26 @@ if (
 // Initialize Firebase App singleton
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-// Initialize Firestore
-export const db = getFirestore(app);
+// Initialize Firestore.
+//
+// ignoreUndefinedProperties is what stops an optional field that happens to be
+// undefined from failing the whole write. Without it setDoc() rejects the
+// document outright ("Unsupported field value: undefined"), which in practice
+// means one absent optional field discards every other field with it. Omitting
+// the key is the behaviour the callers already assume.
+//
+// initializeFirestore throws if Firestore has already been started for this app,
+// which happens when Vite re-evaluates this module during HMR. Fall back to the
+// instance that is already running rather than taking the app down with it.
+function createFirestore() {
+  try {
+    return initializeFirestore(app, { ignoreUndefinedProperties: true });
+  } catch {
+    return getFirestore(app);
+  }
+}
+
+export const db = createFirestore();
 
 // Initialize Storage
 export const storage = getStorage(app);

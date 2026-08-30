@@ -98,31 +98,15 @@ export async function uploadStudyDocument(
   file: File,
   metadata?: Partial<StudyDocument>
 ): Promise<StudyDocument> {
-  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const timestamp = Date.now();
-  const storagePath = `users/${userId}/documents/${timestamp}_${safeName}`;
-  const storageRef = ref(storage, storagePath);
-
-  let downloadUrl = "";
-  let finalStoragePath: string | undefined = storagePath;
-
-  try {
-    const uploadResult = await uploadBytes(storageRef, file);
-    downloadUrl = await getDownloadURL(uploadResult.ref);
-  } catch (err) {
-    console.warn("Firebase Storage direct upload failed/fallback to blob URL:", err);
-    downloadUrl = URL.createObjectURL(file);
-    finalStoragePath = undefined;
-  }
-
   const docId = `doc-${timestamp}`;
-  const newDoc: StudyDocument = {
+
+  // Everything except where the bytes actually live. Each branch below supplies
+  // fileUrl (and storagePath) according to what it can genuinely promise.
+  const base = {
     id: docId,
-    userId: userId || GUEST_USER_ID,
     title: metadata?.title?.trim() || file.name.replace(/\.[^/.]+$/, "").replace(/_/g, " "),
     fileName: file.name,
-    fileUrl: downloadUrl,
-    storagePath: finalStoragePath,
     fileType: file.type || "application/pdf",
     fileSize: file.size,
     uploadedAt: new Date().toISOString(),
@@ -131,22 +115,61 @@ export async function uploadStudyDocument(
     pinned: metadata?.pinned ?? false,
   };
 
-  // If user is logged in, save to Firestore
-  if (userId && userId !== GUEST_USER_ID) {
-    try {
-      await setDoc(doc(db, "documents", docId), newDoc);
-    } catch (firestoreErr) {
-      console.warn("Could not save document metadata to Firestore:", firestoreErr);
-    }
-  } else {
-    // Save to guest localStorage
+  // Guest Scholars have no Firebase Auth user, so Storage and Firestore both
+  // refuse them by rule. Their vault is local-only by design.
+  if (!userId || userId === GUEST_USER_ID) {
+    const objectUrl = URL.createObjectURL(file);
+
+    // The object URL is valid only for the page that created it, so it is handed
+    // back for this session but deliberately not written to localStorage: a
+    // stored blob: URL is already dead on the next reload, and a card that
+    // silently opens nothing is worse than one that admits the file is gone.
+    const persisted: StudyDocument = { ...base, userId: GUEST_USER_ID, fileUrl: "" };
     try {
       const saved = localStorage.getItem("studispace_guest_documents");
       const currentList: StudyDocument[] = saved ? JSON.parse(saved) : INITIAL_STUDY_DOCUMENTS;
-      localStorage.setItem("studispace_guest_documents", JSON.stringify([newDoc, ...currentList]));
+      localStorage.setItem(
+        "studispace_guest_documents",
+        JSON.stringify([persisted, ...currentList])
+      );
     } catch (localErr) {
       console.warn("Guest storage write failed:", localErr);
     }
+
+    return { ...persisted, fileUrl: objectUrl };
+  }
+
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const storagePath = `users/${userId}/documents/${timestamp}_${safeName}`;
+  const storageRef = ref(storage, storagePath);
+
+  // A signed-in student's vault has to survive a reload, so the bytes must
+  // really reach Storage. There is no blob: fallback here on purpose: it would
+  // put a URL into Firestore that is broken the moment the tab closes, and sync
+  // that broken record to every other device.
+  let fileUrl: string;
+  try {
+    const uploadResult = await uploadBytes(storageRef, file);
+    fileUrl = await getDownloadURL(uploadResult.ref);
+  } catch (err: any) {
+    throw new Error(
+      `Could not upload "${file.name}" to your vault: ${err?.message || "Firebase Storage is unreachable."}`
+    );
+  }
+
+  const newDoc: StudyDocument = { ...base, userId, fileUrl, storagePath };
+
+  try {
+    await setDoc(doc(db, "documents", docId), newDoc);
+  } catch (firestoreErr: any) {
+    // The file is in Storage but nothing points at it. Drop it rather than
+    // leaving an orphan the student is billed for and can never see.
+    await deleteObject(storageRef).catch(() => {});
+    throw new Error(
+      `"${file.name}" was uploaded but could not be saved to your vault: ${
+        firestoreErr?.message || "Firestore write failed."
+      }`
+    );
   }
 
   return newDoc;
