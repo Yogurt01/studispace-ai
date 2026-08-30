@@ -321,7 +321,22 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
             </div>
           )}
 
-          {hasEmbedError ? (
+          {!doc.fileUrl ? (
+            /* A Guest Scholar's upload lives only in the session that made it:
+               the object URL cannot be stored, so after a reload the entry is
+               here but the file is not. Say that, rather than rendering an
+               empty frame that looks like a failed load. */
+            <div className="bg-white border-2 border-black p-6 sm:p-8 max-w-md text-center shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
+              <div className="w-12 h-12 bg-[#FFE600] border-2 border-black flex items-center justify-center mx-auto mb-3">
+                <FileText className="w-6 h-6 text-black" />
+              </div>
+              <h3 className="font-black text-lg text-black mb-1">File Not Stored</h3>
+              <p className="text-xs text-gray-600 font-bold">
+                This entry was added in Guest Scholar mode, which keeps documents only for the
+                session that uploaded them. Sign in and upload it again to keep the file itself.
+              </p>
+            </div>
+          ) : hasEmbedError ? (
             <div className="bg-white border-2 border-black p-6 sm:p-8 max-w-md text-center shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
               <div className="w-12 h-12 bg-[#FF66C4] border-2 border-black flex items-center justify-center mx-auto mb-3">
                 <FileText className="w-6 h-6 text-black" />

@@ -16,7 +16,8 @@ import {
   Zap,
   HelpCircle,
 } from "lucide-react";
-import { CourseGrade, CourseCategory, ExtractedCourse } from "../types";
+import { CourseGrade, CourseCategory, ExtractedCourse, TranscriptEngine } from "../types";
+import { GRADE_POINTS_4, isLikelyNonGpaCourse, resolveGrade } from "../utils/grading";
 import { soundEngine } from "../utils/audioSynthesizer";
 import confetti from "canvas-confetti";
 
@@ -26,36 +27,6 @@ interface TranscriptParserModalProps {
   onImportCourses: (courses: CourseGrade[]) => void;
   onAwardXp: (amount: number) => void;
 }
-
-const GRADE_POINTS_4: Record<string, number> = {
-  "A+": 4.0,
-  A: 4.0,
-  "A-": 3.7,
-  "B+": 3.3,
-  B: 3.0,
-  "B-": 2.7,
-  "C+": 2.3,
-  C: 2.0,
-  "C-": 1.7,
-  "D+": 1.3,
-  D: 1.0,
-  F: 0.0,
-};
-
-const GRADE_POINTS_10: Record<string, number> = {
-  "A+": 10.0,
-  A: 9.5,
-  "A-": 8.5,
-  "B+": 8.0,
-  B: 7.5,
-  "B-": 7.0,
-  "C+": 6.5,
-  C: 6.0,
-  "C-": 5.5,
-  "D+": 5.0,
-  D: 4.0,
-  F: 0.0,
-};
 
 export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
   isOpen,
@@ -200,23 +171,38 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
 
         const mappedCourses: CourseGrade[] = rawCourses.map(
           (c: ExtractedCourse, index: number) => {
-            const gradeStr = (c.letterGrade || c.grade || "A").toUpperCase().trim();
-            const creditsNum = Number(c.credits) || 3;
-            const gp4 = GRADE_POINTS_4[gradeStr] ?? 4.0;
-            const numGrade = c.numericGrade ? Number(c.numericGrade) : undefined;
-            const gp10 = numGrade ? numGrade / 10 : GRADE_POINTS_10[gradeStr] ?? 9.5;
+            const creditsNum = Number(c.credits) || 0;
+            const letterGrade = (c.letterGrade || c.grade || "").toUpperCase().trim();
+            const numericGrade =
+              typeof c.numericGrade === "number" && Number.isFinite(c.numericGrade)
+                ? c.numericGrade
+                : undefined;
+
+            // Nothing is defaulted to a pass here. A row the engine could not
+            // read arrives with no grade, resolves to nothing, and is shown for
+            // the student to fill in — it used to arrive as an A.
+            const grade = resolveGrade({ letterGrade, numericGrade, gradePoints4: c.gradePoints4 });
+            const courseName = (c.courseName || "Extracted Course").trim();
 
             return {
-              id: `parsed-${Date.now()}-${index}-${Math.random().toString(36).substr(2, 5)}`,
+              id: `parsed-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`,
               courseCode: (c.courseCode || "CRS 101").toUpperCase().trim(),
-              courseName: (c.courseName || "Extracted Course").trim(),
-              term: (c.term || "Fall 2026").trim(),
+              courseName,
+              // Most transcripts have no term column; say so rather than
+              // inventing a semester the student never enrolled in.
+              term: (c.term || "Unspecified").trim(),
               credits: creditsNum,
-              letterGrade: gradeStr,
-              numericGrade: numGrade,
+              letterGrade,
+              numericGrade,
+              gradePoints4: c.gradePoints4,
               category: (c.category as CourseCategory) || "Core",
-              qualityPoints4: Number((creditsNum * gp4).toFixed(2)),
-              qualityPoints10: Number((creditsNum * gp10).toFixed(2)),
+              qualityPoints4: Number((creditsNum * grade.gradePoints4).toFixed(2)),
+              qualityPoints10: Number((creditsNum * grade.gradePoints10).toFixed(2)),
+              excludedFromGpa: isLikelyNonGpaCourse(courseName),
+              confidence: grade.resolved ? c.confidence ?? "high" : "low",
+              parseNote: grade.resolved
+                ? c.note
+                : c.note ?? "No grade was read for this row — enter it before importing.",
             };
           }
         );
@@ -244,11 +230,22 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
 
       if (field === "credits" || field === "letterGrade" || field === "numericGrade") {
         const cr = Number(target.credits) || 0;
-        const gp4 = GRADE_POINTS_4[target.letterGrade] ?? 4.0;
-        const num = target.numericGrade ? Number(target.numericGrade) : undefined;
-        const gp10 = num ? num / 10 : GRADE_POINTS_10[target.letterGrade] ?? 9.5;
-        target.qualityPoints4 = Number((cr * gp4).toFixed(2));
-        target.qualityPoints10 = Number((cr * gp10).toFixed(2));
+        const num =
+          typeof target.numericGrade === "number" && Number.isFinite(target.numericGrade)
+            ? target.numericGrade
+            : undefined;
+        // Editing a row by hand re-resolves it: typing a grade in clears the
+        // "no grade" flag, and clearing one puts it back.
+        const grade = resolveGrade({
+          letterGrade: target.letterGrade,
+          numericGrade: num,
+          // A hand-edited grade replaces whatever the registrar's column said.
+          gradePoints4: field === "credits" ? target.gradePoints4 : undefined,
+        });
+        target.qualityPoints4 = Number((cr * grade.gradePoints4).toFixed(2));
+        target.qualityPoints10 = Number((cr * grade.gradePoints10).toFixed(2));
+        target.confidence = grade.resolved ? "high" : "low";
+        target.parseNote = grade.resolved ? undefined : "No grade yet — enter one before importing.";
       }
 
       updated[index] = target;
@@ -266,13 +263,16 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
       id: `manual-${Date.now()}`,
       courseCode: "NEW 101",
       courseName: "New Course Subject",
-      term: extractedCourses[0]?.term || "Fall 2026",
+      term: extractedCourses[0]?.term || "Unspecified",
       credits: 3,
-      letterGrade: "A",
-      numericGrade: 95,
+      // Deliberately ungraded: a blank row the student fills in, rather than one
+      // that silently arrives as a 95.
+      letterGrade: "",
       category: "Core",
-      qualityPoints4: 12.0,
-      qualityPoints10: 28.5,
+      qualityPoints4: 0,
+      qualityPoints10: 0,
+      confidence: "low",
+      parseNote: "Enter a grade for this row.",
     };
     setExtractedCourses((prev) => [...prev, newCourse]);
     soundEngine.playChime("click");
@@ -618,7 +618,8 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
                       <th className="p-2.5">Course Name</th>
                       <th className="p-2.5">Term</th>
                       <th className="p-2.5 w-16">Credits</th>
-                      <th className="p-2.5 w-20">Grade</th>
+                      <th className="p-2.5 w-20">Score</th>
+                      <th className="p-2.5 w-20">Letter</th>
                       <th className="p-2.5">Category</th>
                       <th className="p-2.5 text-right">Actions</th>
                     </tr>
@@ -681,7 +682,40 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
                           />
                         </td>
 
-                        {/* Grade */}
+                        {/* Numeric score. Many transcripts grade on a 10-point
+                            or percentage scale and print no letter at all, so
+                            without this column the row reads as ungraded even
+                            though the parser read its grade correctly. */}
+                        <td className="p-2">
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={course.numericGrade ?? ""}
+                            placeholder="—"
+                            onChange={(e) =>
+                              handleUpdateCourseRow(
+                                idx,
+                                "numericGrade",
+                                e.target.value === "" ? undefined : Number(e.target.value)
+                              )
+                            }
+                            className={`w-16 p-1 border border-black font-black text-xs text-center ${
+                              course.confidence === "low" ? "bg-[#FF66C4]" : "bg-white"
+                            }`}
+                            title={course.parseNote ?? "Grade as printed on the transcript"}
+                          />
+                          {typeof course.gradePoints4 === "number" && (
+                            <div
+                              className="text-[9px] font-bold text-gray-500 text-center mt-0.5"
+                              title="4-point grade as printed on the transcript"
+                            >
+                              {course.gradePoints4.toFixed(2)} / 4
+                            </div>
+                          )}
+                        </td>
+
+                        {/* Letter grade, for transcripts that print one */}
                         <td className="p-2">
                           <select
                             value={course.letterGrade}
@@ -690,6 +724,10 @@ export const TranscriptParserModal: React.FC<TranscriptParserModalProps> = ({
                             }
                             className="p-1 bg-[#FFE600] border border-black font-black text-xs cursor-pointer"
                           >
+                            {/* A row whose grade could not be read holds "",
+                                which needs an option of its own — otherwise the
+                                select displays A+ while the row is ungraded. */}
+                            <option value="">— no grade —</option>
                             {Object.keys(GRADE_POINTS_4).map((g) => (
                               <option key={g} value={g}>
                                 {g}

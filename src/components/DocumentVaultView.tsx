@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { StudyDocument, DocumentCategory, CourseGrade } from "../types";
 import { soundEngine } from "../utils/audioSynthesizer";
+import { ACCEPTED_FILE_INPUT, validateDocumentFile } from "../utils/documentValidation";
 import { DocumentViewerModal } from "./DocumentViewerModal";
 
 interface DocumentVaultViewProps {
@@ -161,28 +162,38 @@ export const DocumentVaultView: React.FC<DocumentVaultViewProps> = ({
       });
   }, [documents, searchQuery, selectedCategory, selectedCourseTag, sortBy]);
 
-  // File drop & select handlers
+  // File drop & select handlers. Both go through one check: the input's accept
+  // list is only a picker filter and drag-and-drop ignores it entirely, so
+  // without this an unsupported or oversized file reaches Storage and fails
+  // there, after the student has waited on the transfer.
+  const acceptFile = (file: File) => {
+    const check = validateDocumentFile(file);
+    if (!check.ok) {
+      setUploadFile(null);
+      setUploadError(check.message ?? "That file cannot be added to the vault.");
+      soundEngine.playChime("click");
+      return;
+    }
+
+    setUploadError(null);
+    setUploadFile(file);
+    if (!uploadTitle) {
+      setUploadTitle(file.name.replace(/\.[^/.]+$/, "").replace(/_/g, " "));
+    }
+    soundEngine.playChime("click");
+  };
+
   const handleFileDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const file = e.dataTransfer.files[0];
-      setUploadFile(file);
-      if (!uploadTitle) {
-        setUploadTitle(file.name.replace(/\.[^/.]+$/, "").replace(/_/g, " "));
-      }
-      soundEngine.playChime("click");
+      acceptFile(e.dataTransfer.files[0]);
     }
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      const file = e.target.files[0];
-      setUploadFile(file);
-      if (!uploadTitle) {
-        setUploadTitle(file.name.replace(/\.[^/.]+$/, "").replace(/_/g, " "));
-      }
-      soundEngine.playChime("click");
+      acceptFile(e.target.files[0]);
     }
   };
 
@@ -190,6 +201,12 @@ export const DocumentVaultView: React.FC<DocumentVaultViewProps> = ({
     e.preventDefault();
     if (!uploadFile) {
       setUploadError("Please select a file to upload.");
+      return;
+    }
+
+    const check = validateDocumentFile(uploadFile);
+    if (!check.ok) {
+      setUploadError(check.message ?? "That file cannot be added to the vault.");
       return;
     }
 
@@ -775,7 +792,7 @@ export const DocumentVaultView: React.FC<DocumentVaultViewProps> = ({
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".pdf,.png,.jpg,.jpeg,.txt,.docx"
+                  accept={ACCEPTED_FILE_INPUT}
                   onChange={handleFileSelect}
                   className="hidden"
                 />

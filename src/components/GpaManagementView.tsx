@@ -15,6 +15,7 @@ import {
   BarChart3,
 } from "lucide-react";
 import { CourseGrade, CourseCategory } from "../types";
+import { GRADE_POINTS_4, computeGpa, detectNumericScale, resolveGrade } from "../utils/grading";
 import { soundEngine } from "../utils/audioSynthesizer";
 import confetti from "canvas-confetti";
 import { TranscriptParserModal } from "./TranscriptParserModal";
@@ -28,35 +29,6 @@ interface GpaManagementViewProps {
   onAwardXp: (amount: number) => void;
 }
 
-const GRADE_POINTS_4: Record<string, number> = {
-  "A+": 4.0,
-  A: 4.0,
-  "A-": 3.7,
-  "B+": 3.3,
-  B: 3.0,
-  "B-": 2.7,
-  "C+": 2.3,
-  C: 2.0,
-  "C-": 1.7,
-  "D+": 1.3,
-  D: 1.0,
-  F: 0.0,
-};
-
-const GRADE_POINTS_10: Record<string, number> = {
-  "A+": 10.0,
-  A: 9.5,
-  "A-": 8.5,
-  "B+": 8.0,
-  B: 7.5,
-  "B-": 7.0,
-  "C+": 6.5,
-  C: 6.0,
-  "C-": 5.5,
-  "D+": 5.0,
-  D: 4.0,
-  F: 0.0,
-};
 
 const DEGREE_CREDIT_PRESETS = [
   { credits: 120, label: "120 Credits", desc: "Standard US Bachelor's (4-Year)" },
@@ -107,32 +79,36 @@ export const GpaManagementView: React.FC<GpaManagementViewProps> = ({
   }, [courses]);
 
   // Overall Cumulative GPA & Stats
-  const { totalCredits, totalQualityPoints4, totalQualityPoints10, cumulativeGpa4, cumulativeGpa10 } =
-    useMemo(() => {
-      let credits = 0;
-      let qp4 = 0;
-      let qp10 = 0;
-
-      courses.forEach((c) => {
-        const cr = Number(c.credits) || 0;
-        const gp4 = GRADE_POINTS_4[c.letterGrade] ?? 0;
-        const gp10 = c.numericGrade ? c.numericGrade / 10 : GRADE_POINTS_10[c.letterGrade] ?? 0;
-        credits += cr;
-        qp4 += cr * gp4;
-        qp10 += cr * gp10;
-      });
-
-      const gpa4 = credits > 0 ? qp4 / credits : 0;
-      const gpa10 = credits > 0 ? qp10 / credits : 0;
-
-      return {
-        totalCredits: credits,
-        totalQualityPoints4: qp4,
-        totalQualityPoints10: qp10,
-        cumulativeGpa4: gpa4,
-        cumulativeGpa10: gpa10,
-      };
-    }, [courses]);
+  // One shared engine for the arithmetic, so what the transcript importer
+  // resolved is what the GPA shows. It also honours the two things this view
+  // used to ignore: courses that earn credit without counting towards the
+  // average, and rows whose grade was never readable.
+  const {
+    totalCredits,
+    totalQualityPoints4,
+    totalQualityPoints10,
+    cumulativeGpa4,
+    cumulativeGpa10,
+    ungradedCourses,
+    ungradedCredits,
+    excludedCourseCount,
+    excludedCredits,
+  } = useMemo(() => {
+    const summary = computeGpa(courses);
+    return {
+      totalCredits: summary.totalCredits,
+      totalQualityPoints4: summary.qualityPoints4,
+      totalQualityPoints10: summary.qualityPoints10,
+      cumulativeGpa4: summary.gpa4,
+      cumulativeGpa10: summary.gpa10,
+      ungradedCourses: summary.unresolved,
+      ungradedCredits: summary.unresolved.reduce((sum, c) => sum + (Number(c.credits) || 0), 0),
+      excludedCourseCount: courses.filter((c) => c.excludedFromGpa).length,
+      excludedCredits: courses
+        .filter((c) => c.excludedFromGpa)
+        .reduce((sum, c) => sum + (Number(c.credits) || 0), 0),
+    };
+  }, [courses]);
 
   // Degree completion calculations
   const degreeProgressPercent = useMemo(() => {
@@ -173,17 +149,10 @@ export const GpaManagementView: React.FC<GpaManagementViewProps> = ({
   const termStats = useMemo(() => {
     if (selectedTerm === "all") return null;
     const termCourses = courses.filter((c) => c.term === selectedTerm);
-    let credits = 0;
-    let qp4 = 0;
-    termCourses.forEach((c) => {
-      const cr = Number(c.credits) || 0;
-      const gp4 = GRADE_POINTS_4[c.letterGrade] ?? 0;
-      credits += cr;
-      qp4 += cr * gp4;
-    });
+    const summary = computeGpa(termCourses);
     return {
-      termCredits: credits,
-      termGpa4: credits > 0 ? qp4 / credits : 0,
+      termCredits: summary.totalCredits,
+      termGpa4: summary.gpa4,
       courseCount: termCourses.length,
     };
   }, [courses, selectedTerm]);
@@ -273,9 +242,13 @@ export const GpaManagementView: React.FC<GpaManagementViewProps> = ({
     if (!formCode.trim() || !formName.trim()) return;
 
     const cr = Number(formCredits) || 3;
-    const gp4 = GRADE_POINTS_4[formGrade] ?? 4.0;
     const numGrade = formNumeric === "" ? undefined : Number(formNumeric);
-    const gp10 = numGrade ? numGrade / 10 : (GRADE_POINTS_10[formGrade] ?? 9.5);
+    // No "?? 4.0" here any more: a course saved without a recognisable grade
+    // scores nothing rather than a perfect four.
+    const { gradePoints4: gp4, gradePoints10: gp10 } = resolveGrade({
+      letterGrade: formGrade,
+      numericGrade: numGrade,
+    });
 
     if (editingCourse) {
       const updated: CourseGrade = {
@@ -377,7 +350,8 @@ export const GpaManagementView: React.FC<GpaManagementViewProps> = ({
             {cumulativeGpa4.toFixed(2)}
           </div>
           <div className="text-[11px] font-bold text-gray-600">
-            {totalQualityPoints4.toFixed(1)} Quality Points / {totalCredits} Credits
+            {totalQualityPoints4.toFixed(1)} Quality Points /{" "}
+            {totalCredits - excludedCredits - ungradedCredits} Graded Credits
           </div>
         </div>
 
@@ -394,6 +368,27 @@ export const GpaManagementView: React.FC<GpaManagementViewProps> = ({
             Weighted numerical average
           </div>
         </div>
+
+        {/* Why the GPA may run over fewer credits than the student has earned.
+            Without this the two numbers simply disagree on screen. */}
+        {(excludedCourseCount > 0 || ungradedCourses.length > 0) && (
+          <div className="sm:col-span-2 lg:col-span-3 bg-[#FFE600] border-2 border-black p-3 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] text-xs font-bold text-black space-y-1">
+            {excludedCourseCount > 0 && (
+              <div>
+                {excludedCourseCount} course{excludedCourseCount === 1 ? "" : "s"} ({excludedCredits}{" "}
+                credit{excludedCredits === 1 ? "" : "s"}) count towards graduation but not towards the
+                average, the way physical education and defence education are handled on your transcript.
+              </div>
+            )}
+            {ungradedCourses.length > 0 && (
+              <div>
+                {ungradedCourses.length} course{ungradedCourses.length === 1 ? "" : "s"} have no grade yet
+                ({ungradedCourses.map((c) => c.courseCode).join(", ")}) and are left out of the average
+                rather than guessed at. Add their grades to include them.
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Total Credits Completed & Degree Goal Progress */}
         <div className="bg-white border-2 border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] space-y-2 relative">
@@ -581,9 +576,13 @@ export const GpaManagementView: React.FC<GpaManagementViewProps> = ({
                         >
                           {c.letterGrade}
                         </span>
-                        {c.numericGrade && (
+                        {/* The suffix has to follow the scale: a 10-point 9.0
+                            is not "9%". A zero is a real grade, so the check is
+                            for a number rather than for truthiness. */}
+                        {typeof c.numericGrade === "number" && (
                           <span className="text-[10px] text-gray-500 font-mono">
-                            ({c.numericGrade}%)
+                            ({c.numericGrade}
+                            {detectNumericScale(c.numericGrade) === "percentage" ? "%" : "/10"})
                           </span>
                         )}
                       </div>

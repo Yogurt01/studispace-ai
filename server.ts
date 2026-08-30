@@ -18,6 +18,8 @@ import {
   ProviderError,
 } from "./server/socrates/providers/types";
 import { SocratesService } from "./server/socrates/service";
+import { parseTranscriptTable } from "./server/transcript/tableParser";
+import { recognizeTranscriptImage, OcrUnavailableError } from "./server/transcript/ocr";
 
 dotenv.config();
 
@@ -421,134 +423,142 @@ Make all 4 options believable and plausible (no joke options). Provide a solid c
     }
   });
 
-  // AI Transcript & Course Multimodal Parser Endpoint
+  // AI Transcript & Course Multimodal Parser Endpoint.
+  //
+  // Two engines, in order:
+  //   1. Gemini multimodal Vision — reads the scan directly and is far better at
+  //      messy tables, rotated scans and handwriting.
+  //   2. A local fallback — Tesseract turns the image into text, and a
+  //      deterministic table parser turns that text into rows. No API key, no
+  //      quota, no network beyond the one-off language-model download.
+  //
+  // The fallback also covers a Gemini call that fails or comes back empty, so an
+  // outage degrades the feature rather than removing it. The response always
+  // names the engine that produced it, because the two do not have the same
+  // accuracy and the student is asked to review before importing.
   app.post("/api/gemini/parse-transcript", async (req, res) => {
-    try {
-      const { transcriptText = "", base64Data, mimeType } = req.body;
-      if (!transcriptText && !base64Data) {
-        return res.status(400).json({ error: "Transcript text or document/image is required" });
-      }
+    const { transcriptText = "", base64Data, mimeType } = req.body ?? {};
 
-      const ai = getGeminiClient();
+    if (!transcriptText && !base64Data) {
+      return res.status(400).json({ error: "Transcript text or document/image is required" });
+    }
 
-      if (!ai) {
-        // High quality fallback parsed data if API key not present
-        const sampleParsed = [
-          {
-            courseCode: "CS 301",
-            courseName: "Algorithms & Complexities",
-            term: "Spring 2026",
-            credits: 4,
-            grade: "A",
-            letterGrade: "A",
-            numericGrade: 95,
-            qualityPoints: 16.0,
-            category: "Core",
-          },
-          {
-            courseCode: "MATH 302",
-            courseName: "Probability & Statistics for Engineers",
-            term: "Spring 2026",
-            credits: 3,
-            grade: "A-",
-            letterGrade: "A-",
-            numericGrade: 89,
-            qualityPoints: 11.1,
-            category: "Core",
-          },
-          {
-            courseCode: "PHYS 150",
-            courseName: "University Physics II (Electromagnetism)",
-            term: "Spring 2026",
-            credits: 4,
-            grade: "B+",
-            letterGrade: "B+",
-            numericGrade: 86,
-            qualityPoints: 13.2,
-            category: "Gen Ed",
-          },
-          {
-            courseCode: "SWE 240",
-            courseName: "Software Architecture & Design Patterns",
-            term: "Fall 2025",
-            credits: 3,
-            grade: "A",
-            letterGrade: "A",
-            numericGrade: 94,
-            qualityPoints: 12.0,
-            category: "Major Elective",
-          },
-        ];
-        return res.json({
-          institution: "StudiSpace Academic Portal",
-          courses: sampleParsed,
-          extractedCourses: sampleParsed,
-          simulated: true,
-        });
-      }
+    let cleanBase64 = "";
+    let effectiveMimeType = mimeType || "image/png";
 
-      let cleanBase64 = "";
-      let effectiveMimeType = mimeType || "image/png";
-
-      if (base64Data && typeof base64Data === "string") {
-        if (base64Data.startsWith("data:")) {
-          const match = base64Data.match(/^data:([^;]+);base64,(.+)$/);
-          if (match) {
-            effectiveMimeType = match[1];
-            cleanBase64 = match[2];
-          } else {
-            cleanBase64 = base64Data.replace(/^data:[^,]+,/, "");
-          }
+    if (base64Data && typeof base64Data === "string") {
+      if (base64Data.startsWith("data:")) {
+        const match = base64Data.match(/^data:([^;]+);base64,(.+)$/);
+        if (match) {
+          effectiveMimeType = match[1];
+          cleanBase64 = match[2];
         } else {
-          cleanBase64 = base64Data;
+          cleanBase64 = base64Data.replace(/^data:[^,]+,/, "");
+        }
+      } else {
+        cleanBase64 = base64Data;
+      }
+    }
+
+    /** Engine 2: OCR the image if needed, then read the table out of the text. */
+    const runFallback = async (reason: string) => {
+      let text = String(transcriptText || "");
+      let engine: "ocr-fallback" | "text-fallback" = "text-fallback";
+
+      if (cleanBase64) {
+        try {
+          text = await recognizeTranscriptImage(Buffer.from(cleanBase64, "base64"));
+          engine = "ocr-fallback";
+        } catch (ocrErr: any) {
+          if (!text.trim()) {
+            const detail =
+              ocrErr instanceof OcrUnavailableError
+                ? ocrErr.message
+                : "The local OCR engine failed on this image.";
+            return res.status(503).json({
+              error: "This transcript could not be read.",
+              details: `${reason} ${detail} You can paste the transcript table as text instead, which parses without either engine.`,
+              engine: "ocr-fallback",
+            });
+          }
         }
       }
 
+      const result = parseTranscriptTable(text);
+      const courses = result.courses.map((course) => ({
+        courseCode: course.courseCode,
+        courseName: course.courseName,
+        term: course.term,
+        credits: course.credits,
+        numericGrade: course.numericGrade,
+        gradePoints4: course.gradePoints4,
+        letterGrade: course.letterGrade,
+        confidence: course.confidence,
+        note: course.note,
+      }));
+
+      return res.json({
+        institution: result.institution || "",
+        courses,
+        extractedCourses: courses,
+        engine,
+        skipped: result.skipped,
+        warnings: [reason, ...result.warnings],
+        warning: [reason, ...result.warnings].join(" "),
+      });
+    };
+
+    const ai = getGeminiClient();
+
+    if (!ai) {
+      return runFallback(
+        "Gemini is not configured on this server, so the local OCR fallback was used. Please check the rows before importing."
+      );
+    }
+
+    try {
       const systemInstruction = `You are a world-class academic registrar and visual OCR AI. Your task is to accurately extract all course grades and curriculum records from academic transcripts, grade portal screenshots, report cards, or syllabi (PNG, JPG, WEBP, PDF, or text).
 Carefully read tabular columns for:
-1. Course Code (e.g. "CS 201", "MATH 101", "EE 305")
+1. Course Code (e.g. "CS 201", "MATH 101", "CSC10001")
 2. Course Title / Name (e.g. "Data Structures & Algorithms")
-3. Term / Semester / Year (e.g. "Fall 2025", "Spring 2026", "Semester 1")
+3. Term / Semester / Year if the transcript has such a column. Many transcripts do not; omit the field rather than inventing one.
 4. Credit Hours / Units (e.g. 3, 4, 1.5)
-5. Letter Grade (e.g. "A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D", "F", or scale values like "9.0")
-6. Numeric Percentage or raw score (0-100) if visible
-7. Quality Points (Credits * Grade Points, e.g. 4 * 4.0 = 16.0)
-8. Academic Category (Core, Major Elective, Gen Ed, Lab, or Honors)
+5. Letter Grade (e.g. "A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D+", "D", "F") if the transcript prints letter grades.
+6. Numeric grade exactly as printed, without rescaling it. If the column is a 10-point scale, report 8.6 as 8.6, not 86.
+7. gradePoints4: the grade point on a 4.0 scale if the transcript prints one (a "4-Point grade" column). Report it exactly as printed.
+8. Academic Category (Core, Major Elective, Gen Ed, Lab, or Honors) — your best inference from the course title.
 9. Name of the university / college / institution if visible.
 
-If the image or text does not contain any academic records or is completely unreadable/blurred, return an empty course array and provide a clear warning explanation.`;
+Accuracy rules, which matter more than completeness:
+- Never guess a grade. If a row's grade is unreadable, omit that row entirely and say so in the warning.
+- Never substitute a default or typical grade for one you cannot read.
+- Transcribe numbers exactly as printed; do not convert between scales.
+- If the document contains no academic records, return an empty array and explain why in the warning.`;
 
-      let contents: any[] = [];
-
-      if (cleanBase64) {
-        const imagePart = {
-          inlineData: {
-            mimeType: effectiveMimeType,
-            data: cleanBase64,
-          },
-        };
-        const textPrompt = transcriptText.trim()
-          ? `Perform visual OCR on this transcript scan/screenshot and extract all tabular course rows.\n\nAdditional user notes:\n${transcriptText}`
-          : `Perform high-precision visual OCR on this academic transcript, grade report screenshot, or document. Extract every course code, course title, term/semester, credit hours, grade, and quality points. Return structured JSON.`;
-
-        contents = [
-          {
-            role: "user",
-            parts: [imagePart, { text: textPrompt }],
-          },
-        ];
-      } else {
-        contents = [
-          {
-            role: "user",
-            parts: [
-              {
-                text: `Extract all courses, codes, names, terms, credits, letter grades, and quality points from this transcript text:\n\n${transcriptText}`,
-              },
-            ],
-          },
-        ];
-      }
+      const contents = cleanBase64
+        ? [
+            {
+              role: "user",
+              parts: [
+                { inlineData: { mimeType: effectiveMimeType, data: cleanBase64 } },
+                {
+                  text: transcriptText.trim()
+                    ? `Perform visual OCR on this transcript scan/screenshot and extract all tabular course rows.\n\nAdditional user notes:\n${transcriptText}`
+                    : `Perform high-precision visual OCR on this academic transcript, grade report screenshot, or document. Extract every course code, course title, credit hours and grade exactly as printed. Return structured JSON.`,
+                },
+              ],
+            },
+          ]
+        : [
+            {
+              role: "user",
+              parts: [
+                {
+                  text: `Extract all courses, codes, names, credits and grades from this transcript text:\n\n${transcriptText}`,
+                },
+              ],
+            },
+          ];
 
       const response = await ai.models.generateContent({
         model: "gemini-3.7-flash",
@@ -574,18 +584,23 @@ If the image or text does not contain any academic records or is completely unre
                   properties: {
                     courseCode: { type: Type.STRING },
                     courseName: { type: Type.STRING },
-                    term: { type: Type.STRING },
+                    term: { type: Type.STRING, description: "Only if the transcript has a term column" },
                     credits: { type: Type.NUMBER },
-                    grade: { type: Type.STRING },
                     letterGrade: { type: Type.STRING },
-                    numericGrade: { type: Type.NUMBER },
-                    qualityPoints: { type: Type.NUMBER },
+                    numericGrade: { type: Type.NUMBER, description: "Exactly as printed; do not rescale" },
+                    gradePoints4: {
+                      type: Type.NUMBER,
+                      description: "The 4.0-scale grade point if the transcript prints one",
+                    },
                     category: {
                       type: Type.STRING,
                       enum: ["Core", "Major Elective", "Gen Ed", "Lab", "Honors"],
                     },
                   },
-                  required: ["courseCode", "courseName", "term", "credits", "category"],
+                  // term and the grade fields stay optional on purpose: requiring
+                  // them is what pushes the model into inventing values for
+                  // transcripts that simply do not have those columns.
+                  required: ["courseCode", "courseName", "credits"],
                 },
               },
             },
@@ -595,27 +610,39 @@ If the image or text does not contain any academic records or is completely unre
       });
 
       const parsed = JSON.parse(response.text || '{"extractedCourses":[]}');
-      const coursesList = (parsed.extractedCourses || parsed.courses || []).map((item: any) => {
-        const gradeStr = item.letterGrade || item.grade || "A";
-        return {
-          ...item,
-          letterGrade: gradeStr,
-          grade: gradeStr,
-        };
-      });
+      const coursesList = (parsed.extractedCourses || parsed.courses || []).map((item: any) => ({
+        ...item,
+        // A row with no grade at all is passed through as such. It used to be
+        // relabelled "A", which silently inflated the student's GPA.
+        confidence:
+          item.letterGrade || typeof item.numericGrade === "number" || typeof item.gradePoints4 === "number"
+            ? "high"
+            : "low",
+        note:
+          item.letterGrade || typeof item.numericGrade === "number" || typeof item.gradePoints4 === "number"
+            ? undefined
+            : "No grade could be read for this row.",
+      }));
 
-      res.json({
+      if (coursesList.length === 0) {
+        return runFallback(
+          "Gemini found no course rows in this document, so the local OCR fallback was tried as well."
+        );
+      }
+
+      return res.json({
         institution: parsed.institution || "",
         courses: coursesList,
         extractedCourses: coursesList,
+        engine: "gemini",
         warning: parsed.warning,
+        warnings: parsed.warning ? [parsed.warning] : [],
       });
     } catch (err: any) {
-      console.error("Transcript parse error:", err);
-      res.status(500).json({
-        error: "Failed to parse transcript with Gemini Vision OCR",
-        details: err?.message || "Internal extraction error",
-      });
+      console.error("Transcript parse error (Gemini engine):", err);
+      return runFallback(
+        "The Gemini engine was unavailable for this request, so the local OCR fallback was used. Please check the rows before importing."
+      );
     }
   });
 
