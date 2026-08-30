@@ -34,14 +34,21 @@ export type CourseCategory = "Core" | "Major Elective" | "Gen Ed" | "Lab" | "Hon
 export interface ExtractedCourse {
   courseCode: string;
   courseName: string;
-  term: string;
+  // Optional: many transcripts list courses without a term column at all.
+  term?: string;
   credits: number;
   grade?: string;
   letterGrade?: string;
   numericGrade?: number;
+  gradePoints4?: number;
   qualityPoints?: number;
   category?: CourseCategory;
+  confidence?: "high" | "low";
+  note?: string;
 }
+
+/** Which parser produced a result, so the UI can say so plainly. */
+export type TranscriptEngine = "gemini" | "ocr-fallback" | "text-fallback";
 
 export interface TranscriptParseResponse {
   institution?: string;
@@ -49,6 +56,10 @@ export interface TranscriptParseResponse {
   extractedCourses?: ExtractedCourse[];
   confidenceScore?: number;
   warning?: string;
+  warnings?: string[];
+  engine?: TranscriptEngine;
+  /** Rows that were deliberately not imported rather than guessed at. */
+  skipped?: { line: string; reason: string }[];
   simulated?: boolean;
 }
 
@@ -61,9 +72,15 @@ export interface CourseGrade {
   credits: number; // e.g. 3, 4
   letterGrade: string; // e.g. "A", "A-", "B+", etc.
   numericGrade?: number; // e.g. 92 out of 100 or 9.2 out of 10
+  gradePoints4?: number; // a 4-point grade printed by the registrar, when there is one
   category: CourseCategory;
   qualityPoints4: number; // credits * gradePoint4
   qualityPoints10: number; // credits * gradePoint10
+  // Earns credit but not counted in the average, e.g. physical education.
+  excludedFromGpa?: boolean;
+  // "high" unless the parser had to flag the row for the student to check.
+  confidence?: "high" | "low";
+  parseNote?: string;
 }
 
 export type PomodoroPreset = "quick" | "standard" | "marathon" | "custom";
